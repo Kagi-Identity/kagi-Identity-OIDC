@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>Kagi Identity — Callback</title>
+<style>:root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;color:#171717;background:#fff}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px}main{width:min(100%,680px);border:1px solid #ddd;padding:28px}h1{font-size:28px;letter-spacing:-.05em}p{font-size:14px;color:#555;line-height:1.8}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f7f7f7;padding:16px;font-size:12px;line-height:1.8}a{color:#111}button{padding:11px 14px;background:#111;color:#fff;border:0;cursor:pointer}</style></head>
+<body><main><div style="font-size:12px;color:#777;letter-spacing:.12em">KAGI IDENTITY / CALLBACK</div><h1 id="title">認証応答を確認しています…</h1><p id="message">state と PKCE を確認し、トークンエンドポイントへ接続します。</p><pre id="output" aria-live="polite">処理中…</pre><p><a href="./">デモに戻る</a></p></main>
+<script>
+(async function(){
+'use strict';const $=id=>document.getElementById(id);function fail(message,details){$('title').textContent='接続できませんでした';$('message').textContent=message;$('output').textContent=details||message;}
+function decodeJwtPayload(token){const part=String(token||'').split('.')[1];if(!part)throw new Error('ID Token の形式が不正です。');let s=part.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const binary=atob(s);const bytes=Uint8Array.from(binary,c=>c.charCodeAt(0));return JSON.parse(new TextDecoder().decode(bytes));}
+try{
+ const params=new URLSearchParams(location.search);
+ if(params.has('error'))throw new Error((params.get('error')||'OAuth error')+': '+(params.get('error_description')||'Identity Provider が認証を拒否しました。'));
+ const code=params.get('code'),state=params.get('state');if(!code)throw new Error('認可コードが見つかりません。');
+ const raw=sessionStorage.getItem('kagi-rp-pending');if(!raw)throw new Error('認証状態が見つかりません。元のタブで最初から試してください。');
+ const pending=JSON.parse(raw);sessionStorage.removeItem('kagi-rp-pending');
+ if(Date.now()-pending.createdAt>10*60*1000)throw new Error('認証リクエストが期限切れです。');
+ if(!state||state!==pending.state)throw new Error('state mismatch: CSRF 防止チェックに失敗しました。');
+ const response=await fetch(pending.issuer+'/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',accept:'application/json'},credentials:'omit',body:new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:pending.redirectUri,client_id:pending.clientId,code_verifier:pending.verifier})});
+ const rawText=await response.text();let tokens;try{tokens=JSON.parse(rawText)}catch(_){throw new Error('Token endpoint が JSON を返しませんでした (HTTP '+response.status+')。')}
+ if(!response.ok)throw new Error('Token endpoint HTTP '+response.status+': '+(tokens.error_description||tokens.error||'認可コード交換に失敗しました。'));
+ if(!tokens.id_token)throw new Error('ID Token が返されませんでした。');
+ const claims=decodeJwtPayload(tokens.id_token);
+ if(claims.iss!==pending.issuer)throw new Error('ID Token issuer mismatch。');
+ const aud=claims.aud;const audOk=Array.isArray(aud)?aud.includes(pending.clientId):aud===pending.clientId;if(!audOk)throw new Error('ID Token audience mismatch。');
+ if(claims.nonce!==pending.nonce)throw new Error('ID Token nonce mismatch。');
+ if(claims.exp&&Date.now()/1000>=claims.exp)throw new Error('ID Token の有効期限が切れています。');
+ let profile=null;
+ if(tokens.access_token){const r=await fetch(pending.issuer+'/userinfo',{headers:{authorization:'Bearer '+tokens.access_token,accept:'application/json'},credentials:'omit'});const t=await r.text();if(r.ok){try{profile=JSON.parse(t)}catch(_){}}else throw new Error('UserInfo HTTP '+r.status+': '+t.slice(0,240));}
+ $('title').textContent='認証フローが完了しました';$('message').textContent='state、PKCE、iss、aud、nonce、exp の基本チェックと UserInfo 取得が完了しました。これは署名検証を含む本番用の検証ではありません。';
+ $('output').textContent=JSON.stringify({issuer:pending.issuer,client_id:pending.clientId,token_type:tokens.token_type,expires_in:tokens.expires_in,claims:{sub:claims.sub,aud:claims.aud,iss:claims.iss,exp:claims.exp},userinfo:profile?{sub:profile.sub,name:profile.name,preferred_username:profile.preferred_username,email:profile.email}:null,signature_validation:'NOT PERFORMED IN THIS BROWSER DEMO'},null,2);
+ history.replaceState(null,'',location.pathname);
+}catch(e){fail('認証フローを完了できませんでした。診断ログを確認してください。',String(e&&e.message||e));}
+})();
+</script></body></html>
