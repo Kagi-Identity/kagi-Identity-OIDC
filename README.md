@@ -65,6 +65,8 @@ Feature presence does not imply full normative compliance with every RFC or cert
 
 ## Documentation
 
+**[日本語ドキュメントサイト](https://kagi-docs-gakusei-bot.vercel.app)** — overview, quickstart, OIDC integration, deployment, security, and testing.
+
 | Guide | Use it for |
 | --- | --- |
 | [Quickstart](docs/QUICKSTART.md) | First run with Docker Compose or Rust, troubleshooting |

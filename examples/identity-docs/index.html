@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#ffffff">
+<meta name="description" content="Kagi Identity の導入、OIDC連携、運用、セキュリティを理解するための公式ドキュメントサイト。">
+<title>Kagi Identity Docs — 実装と運用ガイド</title>
+<style>
+:root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;color:#181818;background:#fff;font-synthesis:none;text-rendering:optimizeLegibility;--line:#e5e5e5;--muted:#696969;--soft:#f7f7f7;--black:#111}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:95px}body{margin:0;min-width:320px}a{color:inherit;text-decoration:none}button,input{font:inherit}.nav{height:68px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 max(22px,calc((100vw - 1200px)/2));position:sticky;top:0;background:rgba(255,255,255,.96);backdrop-filter:blur(10px);z-index:5}.brand{display:flex;gap:10px;align-items:center;font-size:15px;font-weight:760;letter-spacing:-.04em}.logo{height:30px;width:30px;background:#111;color:white;display:grid;place-items:center;font-size:14px}.navright{display:flex;gap:20px;align-items:center;font-size:12px;color:#555}.navright a:hover,.side a:hover{color:#000;text-decoration:underline}.pill{border:1px solid #ccc;padding:9px 12px;color:#111!important}.layout{max-width:1200px;margin:auto;display:grid;grid-template-columns:235px minmax(0,1fr);gap:64px;padding:42px 24px 100px}.side{position:sticky;top:100px;align-self:start;max-height:calc(100vh - 120px);overflow:auto;font-size:13px}.side label{display:block;color:#888;font-size:10px;font-weight:750;letter-spacing:.13em;margin:24px 0 9px}.side a{display:block;padding:8px 10px;color:#555;border-left:2px solid transparent}.side a.active{border-left-color:#111;background:#f5f5f5;color:#111;font-weight:650}.search{width:100%;border:1px solid #ddd;padding:11px 12px;margin-bottom:6px;background:#fff;font-size:12px}.content{min-width:0;max-width:840px}.eyebrow{font-size:11px;letter-spacing:.15em;color:#777;font-weight:750;text-transform:uppercase}.hero{padding:20px 0 32px;border-bottom:1px solid var(--line)}h1{font-size:clamp(40px,6vw,68px);line-height:1.02;letter-spacing:-.07em;margin:18px 0 22px;font-weight:760}.lead{font-size:17px;line-height:1.9;color:#555;max-width:700px}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:25px}.btn{display:inline-block;background:#111;color:white;padding:12px 15px;font-size:12px;font-weight:700;border:1px solid #111}.btn.secondary{background:white;color:#111;border-color:#ccc}.notice{margin-top:26px;border:1px solid #ddd;padding:16px 18px;font-size:13px;line-height:1.8;color:#555}.notice strong{color:#111}.notice.warning{border-left:3px solid #111}.section{padding:42px 0 8px;border-bottom:1px solid var(--line)}h2{font-size:27px;letter-spacing:-.05em;margin:0 0 14px}h3{font-size:16px;letter-spacing:-.025em;margin:25px 0 9px}p,li{font-size:14px;line-height:1.9;color:#555}ul,ol{padding-left:22px}li{padding:2px 0}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em;background:#f2f2f2;padding:2px 5px;color:#222;overflow-wrap:anywhere}pre{background:#111;color:#eee;padding:18px;overflow:auto;font-size:12px;line-height:1.8;border:1px solid #222}pre code{background:transparent;color:inherit;padding:0}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:20px 0}.card{border:1px solid var(--line);padding:19px;display:block;min-width:0}.card:hover{border-color:#777}.card .meta{font-size:10px;letter-spacing:.12em;color:#888}.card h3{margin:10px 0 7px}.card p{font-size:12px;margin:0}.tablewrap{overflow-x:auto;margin:20px 0}table{border-collapse:collapse;width:100%;font-size:12px}th,td{padding:12px;border:1px solid #ddd;text-align:left;vertical-align:top;line-height:1.7}th{background:#f6f6f6;font-weight:700}td{color:#555}.flow{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:20px 0}.flow div{border:1px solid #ddd;padding:15px}.flow b{font-size:12px;display:block;margin-bottom:7px}.flow span{font-size:11px;color:#666;line-height:1.6;display:block}.status{display:inline-block;border:1px solid #ddd;padding:4px 7px;font-size:10px;color:#555;letter-spacing:.04em}.footer{padding:28px 24px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;max-width:1200px;margin:auto;color:#777;font-size:11px}.hide{display:none!important}.searchhit{outline:1px solid #aaa}
+@media(max-width:850px){.layout{grid-template-columns:1fr;gap:20px;padding-top:20px}.side{position:static;max-height:none;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 8px}.side .search{grid-column:1/-1}.side label{grid-column:1/-1;margin-top:16px}.side a{font-size:12px}.navright a:not(.pill){display:none}.grid{grid-template-columns:1fr}.flow{grid-template-columns:1fr}.content{max-width:none}}@media(max-width:430px){.side{grid-template-columns:1fr 1fr}.nav{padding:0 14px}.layout{padding-left:16px;padding-right:16px}.lead{font-size:15px}}
+</style>
+</head>
+<body>
+<header class="nav"><a class="brand" href="#top"><span class="logo">K</span><span>Kagi Identity <span style="font-weight:450;color:#777">/ Docs</span></span></a><nav class="navright"><a href="#quickstart">クイックスタート</a><a href="#architecture">アーキテクチャ</a><a href="https://github.com/akiy2009/kagi" target="_blank" rel="noopener noreferrer">GitHub ↗</a><a class="pill" href="https://kagi-rp-demo-gakusei-bot.vercel.app" target="_blank" rel="noopener noreferrer">導入デモ ↗</a></nav></header>
+<div class="layout" id="top">
+<aside class="side" aria-label="ドキュメントナビゲーション">
+<input class="search" id="search" type="search" placeholder="ドキュメントを検索…" aria-label="ドキュメントを検索">
+<label>GET STARTED</label><a href="#overview" class="active">概要</a><a href="#quickstart">クイックスタート</a><a href="#first-login">初回ログイン</a>
+<label>INTEGRATION</label><a href="#oidc">OIDC / OAuth</a><a href="#client">クライアント登録</a><a href="#web">Web アプリ連携</a><a href="#troubleshooting">トラブルシューティング</a>
+<label>OPERATIONS</label><a href="#architecture">アーキテクチャ</a><a href="#deployment">本番デプロイ</a><a href="#database">データベース</a><a href="#security">セキュリティ</a><a href="#testing">テスト・検証</a><a href="#status">対応範囲と制約</a>
+</aside>
+<main class="content">
+<section class="hero" data-search="概要 overview identity authentication passkey OIDC OAuth documentation">
+<div class="eyebrow">IMPLEMENTATION GUIDE · 2026</div>
+<h1>Identity, explained.<br>Built to be tested.</h1>
+<p class="lead">Kagi Identity の仕組み、アプリケーションとの接続、デプロイ、運用時の注意点を一つにまとめた技術ドキュメントです。機能の紹介だけでなく、実際に確認すべき境界と未検証事項も明示します。</p>
+<div class="actions"><a class="btn" href="#quickstart">まず動かす →</a><a class="btn secondary" href="https://github.com/akiy2009/kagi" target="_blank" rel="noopener noreferrer">ソースコードを見る ↗</a></div>
+<div class="notice warning"><strong>重要 — 本番利用について</strong><br>Kagi Identity は開発中のリファレンス実装です。CI の成功やデモの動作は、OIDC / OAuth / WebAuthn の正式な適合認証や、本番運用の安全性を保証しません。公開前に、脅威モデル・独立したセキュリティレビュー・対象仕様に沿った適合テストを実施してください。</div>
+</section>
+<section class="section" id="overview" data-search="概要 features passkey webauthn identity provider">
+<h2>このプロジェクトについて</h2><p>Kagi Identity は Rust で実装された、パスキーを中心とする認証サービスと OpenID Connect / OAuth エンドポイントを提供するプロジェクトです。アプリケーションは Identity Provider（IdP）に認証を委譲し、認証結果を受け取ります。</p>
+<div class="grid">
+<a class="card" href="#oidc"><div class="meta">01 / PROTOCOL</div><h3>OIDC / OAuth</h3><p>Discovery、JWKS、Authorization Code + PKCE、UserInfo の基本を理解する。</p></a>
+<a class="card" href="#web"><div class="meta">02 / INTEGRATION</div><h3>アプリ連携</h3><p>RP クライアント、コールバック URL、ブラウザー SDK の構成を確認する。</p></a>
+<a class="card" href="#deployment"><div class="meta">03 / OPERATIONS</div><h3>デプロイと運用</h3><p>HTTPS、永続 DB、鍵管理、バックアップ、可用性を整理する。</p></a>
+<a class="card" href="#testing"><div class="meta">04 / VALIDATION</div><h3>検証の進め方</h3><p>ビルド・疎通・認証フロー・セキュリティ試験を段階的に実施する。</p></a>
+</div>
+</section>
+<section class="section" id="quickstart" data-search="quickstart docker compose local start run">
+<h2>クイックスタート</h2><p>ローカル検証には Docker Compose を使用します。公開インターネット向けではなく、ローカル評価用の設定です。</p>
+<pre><code>git clone https://github.com/akiy2009/kagi.git
+cd kagi
+docker compose up --build -d
+docker compose logs -f kagi</code></pre>
+<div class="tablewrap"><table><thead><tr><th>エンドポイント</th><th>用途</th></tr></thead><tbody>
+<tr><td><code>http://localhost:8080/</code></td><td>Identity ホーム</td></tr><tr><td><code>http://localhost:8080/signup</code></td><td>パスキー登録</td></tr><tr><td><code>http://localhost:8080/demo</code></td><td>組み込み RP デモ</td></tr><tr><td><code>http://localhost:8080/.well-known/openid-configuration</code></td><td>OIDC Discovery</td></tr><tr><td><code>http://localhost:8080/jwks.json</code></td><td>公開署名鍵</td></tr></tbody></table></div>
+<p>終了するときは <code>docker compose down</code>。ローカル DB と署名鍵も削除する場合のみ <code>docker compose down --volumes</code> を実行します。この操作は復元できません。</p>
+</section>
+<section class="section" id="first-login" data-search="first login passkey signup webauthn">
+<h2>初回ログイン</h2><ol><li>ローカルの <code>/signup</code> を開き、テスト用アカウントを作成します。</li><li>ブラウザーと OS が WebAuthn / パスキーに対応していることを確認します。</li><li><code>/demo</code> からログインを開始し、認可リクエストからコールバックまでの挙動を確認します。</li><li>ブラウザー開発者ツールとサーバーログを確認し、リダイレクト先・エラー・セッションの状態を照合します。</li></ol><p>ローカル HTTP と localhost を前提とした開発設定を、公開環境へそのままコピーしないでください。</p>
+</section>
+<section class="section" id="oidc" data-search="oidc oauth authorization code pkce discovery jwks userinfo">
+<h2>OIDC / OAuth の流れ</h2><p>基本的な Web アプリ連携では、Authorization Code Flow と PKCE（S256）を使用します。クライアントは状態値を生成してリダイレクトし、認証後に登録済みのコールバックへ戻ります。</p>
+<div class="flow"><div><b>1. RP → IdP</b><span>Discovery を取得し、認可リクエストを生成</span></div><div><b>2. ユーザー認証</b><span>IdP 側でパスキー等を使って認証</span></div><div><b>3. コールバック</b><span>code と state を検証し、サーバー側でトークン交換</span></div></div>
+<h3>Discovery と JWKS を確認する</h3><pre><code>curl -fsS https://YOUR-ISSUER/.well-known/openid-configuration
+curl -fsS https://YOUR-ISSUER/jwks.json</code></pre>
+<p><code>issuer</code> は構成した公開 Issuer と完全一致する必要があります。JWKS が取得できることだけでは、トークンの署名・audience・issuer・期限などの検証が正しいことを意味しません。</p>
+</section>
+<section class="section" id="client" data-search="client registration redirect uri registration token">
+<h2>クライアント登録</h2><p>RP の Client ID とコールバック URL は Identity 側に登録します。URL はプロトコル・ホスト・パスを含めて完全一致させ、ワイルドカードや任意の転送先を許可しないでください。</p>
+<pre><code># 例示用です。実際の登録エンドポイント・認証方式は
+# デプロイ中のコミットと docs/CLIENT_INTEGRATION.md を確認してください。
+# 登録トークンはブラウザーへ公開しないこと。</code></pre>
+<ul><li>開発・プレビュー・本番でクライアントを分離する。</li><li>登録トークンや管理トークンは Vercel のサーバー側環境変数など、秘密管理領域に置く。</li><li>クライアントシークレットを静的 HTML や JavaScript に埋め込まない。</li><li>登録変更後、Discovery、認可、コールバック、ログアウトを再テストする。</li></ul>
+</section>
+<section class="section" id="web" data-search="web app browser sdk javascript kagi login callback">
+<h2>Web アプリ連携</h2><p>リポジトリには評価用のブラウザー SDK <code>/static/kagi.js</code> と、Vercel 上で動く静的 RP デモがあります。デモは接続確認のための出発点であり、本番アプリのセッション管理を代替するものではありません。</p>
+<pre><code>&lt;script src="https://YOUR-ISSUER/static/kagi.js"&gt;&lt;/script&gt;
+&lt;script&gt;
+  Kagi.configure({
+    issuer: "https://YOUR-ISSUER",
+    clientId: "YOUR_REGISTERED_CLIENT_ID",
+    redirectUri: location.origin + "/auth/callback",
+    scope: "openid profile email"
+  });
+  Kagi.login();
+&lt;/script&gt;</code></pre>
+<p>実際の SDK の API・エラー処理は利用中のコミットにある実装と照合してください。本番アプリでは、トークン交換・署名検証・セッション発行をサーバー側で行う構成を推奨します。</p>
+</section>
+<section class="section" id="architecture" data-search="architecture runtime server database shared state session rate limiter">
+<h2>アーキテクチャと運用上の境界</h2><p>Vercel はフロントエンドやサーバーレス関数に適していますが、Rust の HTTP サーバーをどの形で実行するか、ファイルシステム・接続・共有状態をどう維持するかを設計する必要があります。</p>
+<div class="tablewrap"><table><thead><tr><th>コンポーネント</th><th>考慮点</th></tr></thead><tbody><tr><td>RP フロントエンド</td><td>静的配信可能。Issuer と callback URL を環境別に管理。</td></tr><tr><td>Identity サーバー</td><td>長時間稼働する Rust サービスの実行方式、HTTPS、ヘルスチェックが必要。</td></tr><tr><td>永続 DB</td><td>ローカル SQLite は開発向け。ホスト環境では永続ストレージか PostgreSQL 等を構成。</td></tr><tr><td>署名鍵・セッション</td><td>鍵の永続化と保護、バックアップ暗号化、ローテーション手順が必要。</td></tr><tr><td>共有状態</td><td>プロセス内のレート制限・リプレイ防止等は複数インスタンス間で共有されるとは限らない。</td></tr></tbody></table></div>
+<div class="notice"><strong>現在の検証状況</strong><br>Vercel の RP デモはデプロイ済みです。一方、Identity 本体は過去の実行時ログで SQLite を開けずに終了した記録があり、Hobby プランではログ保持期間の制限もあります。最新の本番ヘルスチェックが成功するまで、IdP が正常稼働しているとは判断しません。</div>
+</section>
+<section class="section" id="deployment" data-search="production deployment vercel https reverse proxy environment">
+<h2>本番デプロイの基本</h2><ol><li>実行環境が Rust バイナリをサポートするか、コンテナや別の常時稼働ホストを使用するかを決める。</li><li>公開 Issuer、HTTPS、RP ID、WebAuthn Origin を一致させる。</li><li>永続データベース、バックアップ、接続上限、復元テストを設定する。</li><li>管理・登録トークンと署名鍵を秘密情報として管理する。</li><li>ログ、メトリクス、アラート、ヘルスチェック、ロールバック手順を用意する。</li><li>プレビュー環境でプロトコル・ブラウザー・障害復旧テストを終えてから段階的に公開する。</li></ol>
+<h3>Vercel 環境変数</h3><p>Issuer や DB 接続情報を設定する場合、Production / Preview / Development を分離します。秘密情報をクライアント側の <code>NEXT_PUBLIC_</code> など公開環境変数へ入れないでください。実際に受け付ける変数名はリポジトリの <code>docs/CONFIGURATION.md</code> を参照してください。</p>
+</section>
+<section class="section" id="database" data-search="database sqlite postgres supabase persistent data">
+<h2>データベースと永続性</h2><p>SQLite はローカル開発に便利ですが、Vercel のエフェメラルな実行環境に保存したファイルが永続化されるとは限りません。プロセス再起動やインスタンス切り替えで DB や署名鍵が失われる構成は、認証基盤に適しません。</p><ul><li>ホスト環境の永続 DB を使用し、デプロイをまたいだ読み書きをテストする。</li><li>DB バックアップには署名鍵等の機密情報が含まれる可能性があるため、暗号化とアクセス制限を行う。</li><li>複数インスタンス構成では、DB だけでなくセッション、レート制限、リプレイ防止状態の共有方法も確認する。</li><li>バックアップからの復元と鍵ローテーションを実際に演習する。</li></ul>
+</section>
+<section class="section" id="security" data-search="security threat model csrf csp secrets cookies tokens webauthn">
+<h2>セキュリティチェックリスト</h2><p>以下は公開前の最低限の確認項目です。チェックを付けても自動監査や認証取得を意味するものではありません。</p>
+<div id="checklist">
+<label style="display:block;padding:10px 0;border-bottom:1px solid #eee;font-size:13px"><input type="checkbox"> HTTPS と正しい issuer / origin / RP ID を確認した</label>
+<label style="display:block;padding:10px 0;border-bottom:1px solid #eee;font-size:13px"><input type="checkbox"> redirect URI を完全一致で制限した</label>
+<label style="display:block;padding:10px 0;border-bottom:1px solid #eee;font-size:13px"><input type="checkbox"> state、nonce、PKCE、CSRF 防御を実フローで検証した</label>
+<label style="display:block;padding:10px 0;border-bottom:1px solid #eee;font-size:13px"><input type="checkbox"> JWT の署名・issuer・audience・期限を検証した</label>
+<label style="display:block;padding:10px 0;border-bottom:1px solid #eee;font-size:13px"><input type="checkbox"> 管理トークン・秘密情報を公開コードに含めていない</label>
+<label style="display:block;padding:10px 0;border-bottom:1px solid #eee;font-size:13px"><input type="checkbox"> 永続 DB、暗号化バックアップ、復元手順を確認した</label>
+<label style="display:block;padding:10px 0;border-bottom:1px solid #eee;font-size:13px"><input type="checkbox"> 失敗ログ、アラート、レート制限、インシデント対応を準備した</label>
+<label style="display:block;padding:10px 0;border-bottom:1px solid #eee;font-size:13px"><input type="checkbox"> 外部セキュリティレビューと対象プロファイルの適合テストを計画した</label>
+</div>
+</section>
+<section class="section" id="testing" data-search="testing cargo check clippy test e2e smoke deployment">
+<h2>テストと検証</h2><h3>Rust 品質チェック</h3><pre><code>cargo check --locked --all-targets
+cargo test --locked --all-targets
+cargo clippy --locked --all-targets
+cargo build --locked --release</code></pre><h3>実環境の確認順</h3><ol><li>デプロイが READY であることを確認。</li><li>ヘルスチェックとログでサーバーが起動し続けていることを確認。</li><li>Discovery の JSON、issuer、JWKS の形式と到達性を確認。</li><li>テスト用 RP クライアントで登録、認証、コールバック、UserInfo を検証。</li><li>無効な state / nonce、redirect URI 不一致、期限切れトークン、リプレイ等を検証。</li><li>DB 再起動耐性、バックアップ復元、鍵ローテーションを検証。</li></ol><p>CI の成功は、その CI で実行された範囲のみを証明します。実ブラウザー・実ホスト・本番データでの動作を自動的に保証しません。</p>
+</section>
+<section class="section" id="troubleshooting" data-search="troubleshooting errors cors 400 401 403 redirect uri database sqlite">
+<h2>トラブルシューティング</h2>
+<div class="tablewrap"><table><thead><tr><th>症状</th><th>確認すること</th></tr></thead><tbody><tr><td>Discovery に接続できない</td><td>Issuer の HTTPS、DNS、TLS、ホスト側の認証保護、サーバーの起動状態を確認。</td></tr><tr><td>issuer 不一致</td><td>末尾スラッシュや別ドメイン、Preview URL と本番 URL の混同を確認。</td></tr><tr><td>JWKS が空または失敗</td><td>DB に鍵が存在するか、初期化・永続化が成功したかを確認。</td></tr><tr><td>redirect_uri エラー</td><td>登録値と要求値がスキーム・ホスト・パスまで完全一致しているか確認。</td></tr><tr><td>パスキー認証に失敗</td><td>RP ID とブラウザー Origin、HTTPS、ユーザー認証器の状態を確認。</td></tr><tr><td>再デプロイ後にログイン不能</td><td>DB・署名鍵が永続化されているか、インスタンス間で共有されているか確認。</td></tr><tr><td>ブラウザーから SDK を取得できない</td><td>SDK URL、CORS、CSP、ネットワーク、Identity サーバーの配信状態を確認。</td></tr></tbody></table></div>
+</section>
+<section class="section" id="status" data-search="status limitations certification conformance">
+<h2>対応範囲と制約</h2><p>リポジトリの README では、WebAuthn、OIDC / OAuth 関連エンドポイント、トークン機能、PAR / DPoP 等の高度なプロファイル機能が説明されています。ただし、機能の存在と各 RFC の全要件を満たすことは別です。</p><ul><li>正式な OAuth / OIDC / FAPI / WebAuthn 適合認証を取得したと主張しない。</li><li>テスト対象のコミット、構成、データベース、実行環境を記録する。</li><li>本番利用の判断には独立したレビューとプロファイルごとのテストを含める。</li></ul>
+<div class="actions"><a class="btn" href="https://github.com/akiy2009/kagi/tree/main/docs" target="_blank" rel="noopener noreferrer">詳細ドキュメント ↗</a><a class="btn secondary" href="https://github.com/akiy2009/kagi/issues" target="_blank" rel="noopener noreferrer">Issue を確認 ↗</a></div>
+</section>
+</main></div>
+<footer class="footer"><span>Kagi Identity · Technical documentation</span><span>Documentation is informational; verify behavior against the deployed commit.</span></footer>
+<script>
+const search=document.getElementById('search');
+const sections=[...document.querySelectorAll('[data-search]')];
+search.addEventListener('input',()=>{const q=search.value.trim().toLocaleLowerCase();sections.forEach(el=>{el.classList.toggle('hide',q&&!((el.dataset.search+' '+el.innerText).toLocaleLowerCase().includes(q)));});});
+const links=[...document.querySelectorAll('.side a')];
+const observer=new IntersectionObserver(entries=>{entries.forEach(e=>{if(e.isIntersecting){links.forEach(a=>a.classList.toggle('active',a.getAttribute('href')==='#'+e.target.id));}});},{rootMargin:'-15% 0px -75% 0px'});
+document.querySelectorAll('main section[id]').forEach(s=>observer.observe(s));
+</script>
+</body></html>
