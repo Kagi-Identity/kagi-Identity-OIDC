@@ -1142,8 +1142,8 @@ fn mint_access_token(
     st.db.with(|c| {
         c.execute(
             "INSERT INTO access_tokens
-                (jti, user_id, client_id, scope, audience, dpop_jkt, subject, issued_at, expires_at, revoked)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)",
+                (jti, user_id, client_id, scope, audience, dpop_jkt, subject, session_id, issued_at, expires_at, revoked)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)",
             params![
                 jti,
                 subject,
@@ -1152,6 +1152,7 @@ fn mint_access_token(
                 st.cfg.issuer,
                 jkt,
                 subject,
+                session_id,
                 issued_at,
                 expires_at,
             ],
