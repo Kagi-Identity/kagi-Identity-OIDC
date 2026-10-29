@@ -125,8 +125,11 @@ pub fn end_local_session(st: &AppState, headers: &HeaderMap) -> Option<HeaderVal
     let cookies = parse_cookies(headers);
     if let Some(sid) = cookies.get(COOKIE_NAME) {
         let hash = sha256_hex(sid);
-        let _ = st.db.with(|c| {
-            c.execute("DELETE FROM sessions WHERE id = ?1", params![hash])?;
+        // Logout must revoke server-tracked JWTs as well as deleting the browser
+        // session. Otherwise a copied access token could remain active until exp.
+        let _ = st.db.tx(|tx| {
+            db::revoke_session_tokens(tx, &hash)?;
+            tx.execute("DELETE FROM sessions WHERE id = ?1", params![hash])?;
             Ok(())
         });
     }
