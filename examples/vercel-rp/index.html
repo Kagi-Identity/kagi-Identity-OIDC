@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Kagi Identity を利用する RP サンプル。OIDC Discovery、JWKS、PKCE ログイン導線を確認できます。">
+  <title>Kagi Identity — RP Integration Demo</title>
+  <style>
+    :root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;color:#171717;background:#fff;font-synthesis:none;text-rendering:optimizeLegibility}
+    *{box-sizing:border-box}body{margin:0;min-width:320px}a{color:inherit}
+    .top{height:68px;border-bottom:1px solid #e7e7e7;display:flex;align-items:center;justify-content:space-between;padding:0 max(24px,calc((100vw - 1120px)/2))}
+    .brand{display:flex;align-items:center;gap:11px;font-weight:750;letter-spacing:-.035em}.mark{width:29px;height:29px;background:#111;color:white;display:grid;place-items:center;font-size:14px;font-weight:800}
+    .tag{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#737373;border:1px solid #ddd;padding:7px 9px}
+    main{max-width:1120px;margin:auto;padding:68px 24px 90px}.eyebrow{font-size:12px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:#737373}
+    h1{font-size:clamp(36px,6vw,66px);line-height:1.04;letter-spacing:-.065em;margin:18px 0 18px;max-width:800px;font-weight:760}
+    .lead{font-size:16px;line-height:1.85;color:#5e5e5e;max-width:700px;margin:0}
+    .layout{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(300px,.95fr);gap:22px;margin-top:44px}
+    .panel{border:1px solid #dedede;padding:26px;min-width:0}.panel h2{font-size:17px;margin:0 0 22px;letter-spacing:-.025em}
+    label{display:block;font-size:12px;color:#666;font-weight:650;margin:16px 0 7px}
+    input{width:100%;border:1px solid #d4d4d4;border-radius:0;background:#fff;padding:12px 13px;font:inherit;font-size:14px;outline:none}
+    input:focus{border-color:#111;box-shadow:0 0 0 1px #111}
+    .hint{font-size:12px;line-height:1.65;color:#777;margin:8px 0 0;overflow-wrap:anywhere}
+    .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}
+    button{font:inherit;font-size:13px;font-weight:700;border:1px solid #111;padding:12px 16px;cursor:pointer;background:#111;color:white;min-height:43px}
+    button.secondary{background:white;color:#111;border-color:#d5d5d5}button:disabled{opacity:.45;cursor:not-allowed}
+    .status{display:flex;align-items:center;gap:9px;padding:12px 13px;background:#f6f6f6;font-size:13px;line-height:1.5;margin:0 0 14px}
+    .dot{width:8px;height:8px;border-radius:50%;background:#999;flex:none}.status.ok .dot{background:#16834a}.status.bad .dot{background:#c53232}
+    .checks{border-top:1px solid #e7e7e7;margin-top:20px}.check{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;padding:13px 0;border-bottom:1px solid #eee;font-size:13px}.check span:first-child{color:#555}.result{font-size:11px;color:#777;text-align:right;overflow-wrap:anywhere}
+    .callout{margin-top:22px;border-left:2px solid #111;padding:2px 0 2px 14px;color:#666;font-size:12px;line-height:1.75}
+    .section{margin-top:58px}.section h2{font-size:23px;letter-spacing:-.04em;margin:0 0 18px}.steps{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid #ddd}.step{padding:20px 20px 0 0}.num{font-size:11px;color:#888;letter-spacing:.1em}.step h3{font-size:14px;margin:12px 0 8px}.step p{font-size:13px;line-height:1.75;color:#666;margin:0}
+    footer{border-top:1px solid #e7e7e7;padding:22px 24px;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;font-size:12px;color:#777}
+    @media(max-width:760px){main{padding-top:44px}.layout{grid-template-columns:1fr}.panel{padding:20px}.steps{grid-template-columns:1fr}.step{padding:18px 0;border-bottom:1px solid #eee}.top{padding:0 18px}}
+  </style>
+</head>
+<body>
+  <header class="top"><div class="brand"><span class="mark">K</span><span>Kagi Identity</span></div><span class="tag">RP integration demo</span></header>
+  <main>
+    <div class="eyebrow">OpenID Connect / Authorization Code + PKCE</div>
+    <h1>Identity, integrated.<br>Tested in the real world.</h1>
+    <p class="lead">Kagi Identity を利用する relying party（RP）のサンプルです。接続先の Discovery と公開鍵を確認し、設定済みのクライアントでログインフローを試せます。</p>
+    <div class="layout">
+      <section class="panel">
+        <h2>接続設定</h2>
+        <label for="issuer">Issuer URL</label>
+        <input id="issuer" type="url" spellcheck="false" value="https://kagi-pink.vercel.app" placeholder="https://id.example.com">
+        <p class="hint">末尾のスラッシュは自動的に除去します。Discovery の issuer と一致する必要があります。</p>
+        <label for="clientId">Client ID</label>
+        <input id="clientId" value="demo-web" autocomplete="off" spellcheck="false">
+        <label for="redirectUri">Redirect URI</label>
+        <input id="redirectUri" type="url" spellcheck="false">
+        <p class="hint">この URI は Identity 側のクライアント登録に完全一致で登録してください。</p>
+        <div class="actions"><button id="check">接続をテスト</button><button id="login" class="secondary" disabled>Identity でログイン</button></div>
+        <p class="callout">安全上、接続テストではトークンを発行しません。ログインは Discovery と JWKS の検査に成功し、クライアントが登録済みの場合にのみ試してください。</p>
+      </section>
+      <section class="panel">
+        <h2>接続診断</h2>
+        <div id="overall" class="status"><span class="dot"></span><span id="overallText">未検査 — 接続先をテストしてください。</span></div>
+        <div class="checks">
+          <div class="check"><span>OIDC Discovery</span><span id="discoveryResult" class="result">未検査</span></div>
+          <div class="check"><span>Issuer 一致</span><span id="issuerResult" class="result">未検査</span></div>
+          <div class="check"><span>JWKS 公開鍵</span><span id="jwksResult" class="result">未検査</span></div>
+          <div class="check"><span>Browser SDK</span><span id="sdkResult" class="result">未読込</span></div>
+        </div>
+        <p class="hint" id="detail" role="status" aria-live="polite">診断結果とエラーの概要がここに表示されます。</p>
+      </section>
+    </div>
+    <section class="section">
+      <h2>テストの進め方</h2>
+      <div class="steps">
+        <article class="step"><div class="num">01 / CONNECT</div><h3>Issuer を指定</h3><p>HTTPS の Identity サーバー URL を入力し、Discovery と JWKS の応答を確認します。</p></article>
+        <article class="step"><div class="num">02 / REGISTER</div><h3>RP クライアントを登録</h3><p>Client ID と Redirect URI を Identity 側に登録します。URL のスキーム、ホスト、パスは完全一致が必要です。</p></article>
+        <article class="step"><div class="num">03 / AUTHENTICATE</div><h3>ログインフローを検証</h3><p>Authorization Code + PKCE を実行し、コールバック後のセッションとユーザー情報を確認します。</p></article>
+      </div>
+    </section>
+  </main>
+  <footer><span>Kagi Identity · Integration playground</span><span>Reference implementation — not a certification claim</span></footer>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    $('redirectUri').value = location.origin + '/callback.html';
+    let discovery = null;
+    let sdkLoaded = false;
+    function normalizeIssuer() { return $('issuer').value.trim().replace(/\/+$/, ''); }
+    function setResult(id, text, ok) {
+      $(id).textContent = text;
+      $(id).style.color = ok === true ? '#16834a' : ok === false ? '#c53232' : '#777';
+    }
+    function setOverall(kind, text) {
+      $('overall').className = 'status' + (kind ? ' ' + kind : '');
+      $('overallText').textContent = text;
+    }
+    async function loadSdk(issuer) {
+      if (window.Kagi && sdkLoaded) return;
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = issuer + '/static/kagi.js';
+        script.async = true;
+        script.onload = resolve;
+        script.onerror = () => reject(new Error('Browser SDK を読み込めません。Identity の URL と配信状態を確認してください。'));
+        document.head.appendChild(script);
+      });
+      if (!window.Kagi) throw new Error('SDK が初期化されませんでした');
+      sdkLoaded = true;
+    }
+    $('check').addEventListener('click', async () => {
+      const issuer = normalizeIssuer();
+      $('login').disabled = true;
+      discovery = null; sdkLoaded = false;
+      setOverall('', '接続先を確認しています…');
+      ['discoveryResult','issuerResult','jwksResult','sdkResult'].forEach(id => setResult(id,'検査中…',null));
+      $('detail').textContent = '';
+      try {
+        if (!/^https:\/\//i.test(issuer)) throw new Error('Issuer は HTTPS URL を指定してください。');
+        const response = await fetch(issuer + '/.well-known/openid-configuration', {cache:'no-store'});
+        if (!response.ok) throw new Error('Discovery が HTTP ' + response.status + ' を返しました。');
+        discovery = await response.json();
+        setResult('discoveryResult','HTTP ' + response.status,true);
+        const issuerOk = discovery.issuer === issuer;
+        setResult('issuerResult',issuerOk ? '一致' : '不一致',issuerOk);
+        if (!issuerOk) throw new Error('Discovery の issuer が入力値と一致しません。');
+        if (!discovery.jwks_uri) throw new Error('Discovery に jwks_uri がありません。');
+        const jwksResponse = await fetch(discovery.jwks_uri, {cache:'no-store'});
+        if (!jwksResponse.ok) throw new Error('JWKS が HTTP ' + jwksResponse.status + ' を返しました。');
+        const jwks = await jwksResponse.json();
+        if (!Array.isArray(jwks.keys) || jwks.keys.length === 0) throw new Error('JWKS に公開鍵がありません。');
+        setResult('jwksResult',jwks.keys.length + ' key(s)',true);
+        await loadSdk(issuer);
+        setResult('sdkResult','読込成功',true);
+        $('login').disabled = false;
+        setOverall('ok','接続テスト成功 — ログインを試せます。');
+        $('detail').textContent = 'Discovery、issuer、JWKS、SDK の基本チェックが成功しました。これは OIDC の完全な適合性検証ではありません。';
+      } catch (error) {
+        setOverall('bad','接続テスト失敗');
+        $('detail').textContent = error && error.message ? error.message : String(error);
+        if (!discovery) setResult('discoveryResult','失敗',false);
+        if (discovery && discovery.issuer !== issuer) setResult('issuerResult','不一致',false);
+        if ($('jwksResult').textContent === '検査中…') setResult('jwksResult','未完了',false);
+        if ($('sdkResult').textContent === '検査中…') setResult('sdkResult','未読込',false);
+      }
+    });
+    $('login').addEventListener('click', () => {
+      const issuer = normalizeIssuer();
+      const clientId = $('clientId').value.trim();
+      const redirectUri = $('redirectUri').value.trim();
+      if (!clientId || !redirectUri) { $('detail').textContent = 'Client ID と Redirect URI を入力してください。'; return; }
+      try {
+        sessionStorage.setItem('kagi-demo-issuer', issuer);
+        sessionStorage.setItem('kagi-demo-client-id', clientId);
+        sessionStorage.setItem('kagi-demo-redirect-uri', redirectUri);
+        window.Kagi.configure({issuer,clientId,redirectUri,scope:'openid profile email'});
+        window.Kagi.login();
+      } catch (error) {
+        $('detail').textContent = error && error.message ? error.message : String(error);
+      }
+    });
+  </script>
+</body>
+</html>
