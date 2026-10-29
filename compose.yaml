@@ -1,0 +1,26 @@
+services:
+  kagi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kagi-identity:local
+    restart: unless-stopped
+    ports:
+      # Keep the development instance local to this machine.
+      - "127.0.0.1:8080:8080"
+    environment:
+      KAGI_BIND: "0.0.0.0:8080"
+      KAGI_ISSUER: ${KAGI_ISSUER:-http://localhost:8080}
+      KAGI_RP_ID: ${KAGI_RP_ID:-localhost}
+      KAGI_RP_NAME: ${KAGI_RP_NAME:-Kagi Identity}
+      KAGI_ORIGIN: ${KAGI_ORIGIN:-http://localhost:8080}
+      KAGI_DB: /data/kagi.db
+      KAGI_SEED_DEMO: ${KAGI_SEED_DEMO:-1}
+      KAGI_ALLOW_SIGNUP: ${KAGI_ALLOW_SIGNUP:-1}
+      KAGI_REQUIRE_PAR: ${KAGI_REQUIRE_PAR:-0}
+      KAGI_REQUIRE_DPOP: ${KAGI_REQUIRE_DPOP:-0}
+    volumes:
+      - kagi-data:/data
+
+volumes:
+  kagi-data:
