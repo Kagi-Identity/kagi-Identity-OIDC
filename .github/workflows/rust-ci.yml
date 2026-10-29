@@ -120,6 +120,17 @@ jobs:
       - name: Validate documentation site
         run: python3 scripts/check_docs_site.py
 
+  rp-demo-smoke:
+    name: RP demo structure and security checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate RP demo
+        run: python3 scripts/check_rp_demo.py
+
   container-smoke:
     name: Docker Compose quickstart smoke test
     runs-on: ubuntu-latest
