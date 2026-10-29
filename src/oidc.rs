@@ -929,6 +929,37 @@ fn refresh(
     if row.expires_at < now() {
         return Err(OauthError::invalid_grant("refresh token expired"));
     }
+
+    // A refresh token issued from a browser session must not outlive that
+    // session's absolute or idle lifetime. This check is server-side; it does
+    // not depend on the browser still sending its session cookie.
+    if let Some(session_id) = row.session_id.as_deref() {
+        let session = st.db.with(|c| db::load_session(c, session_id))?;
+        let session_active = session.as_ref().is_some_and(|session| {
+            let last_seen = if session.last_seen_at > 0 {
+                session.last_seen_at
+            } else {
+                session.created_at
+            };
+            st.cfg.session_idle_ttl == 0
+                || now().saturating_sub(last_seen) <= st.cfg.session_idle_ttl
+        });
+        if !session_active {
+            st.db.tx(|tx| {
+                db::revoke_session_tokens(tx, session_id)?;
+                tx.execute(
+                    "UPDATE refresh_tokens SET revoked = 1 WHERE family_id = ?1",
+                    params![row.family_id],
+                )?;
+                tx.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])?;
+                Ok(())
+            })?;
+            return Err(OauthError::invalid_grant(
+                "the browser session has expired; sign in again",
+            ));
+        }
+    }
+
     match (&row.dpop_jkt, jkt) {
         (Some(bound), Some(present)) if bound.as_str() == present => {}
         (Some(_), _) => {
