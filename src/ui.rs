@@ -14,7 +14,7 @@ fn page(title: &str, body: &str) -> String {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{title} · kagi</title>
+<title>{title} · Kagi Identity</title>
 <link rel="stylesheet" href="/static/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='7.5' cy='15.5' r='4.5' fill='none' stroke='black' stroke-width='2'/><path d='M10.7 12.3 21 2m-3 3 3 3m-6 0 2 2' fill='none' stroke='black' stroke-width='2'/></svg>">
 </head>
@@ -41,7 +41,7 @@ fn config_script(value: &Value) -> String {
 }
 
 fn brand() -> String {
-    r#"<div class="brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2m-3 3 3 3m-6 0 2 2"/></svg><span>kagi</span></div>"#.to_string()
+    r#"<div class="brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2m-3 3 3 3m-6 0 2 2"/></svg><span>Kagi Identity</span></div>"#.to_string()
 }
 
 pub fn error_page(code: &str, message: &str) -> String {
