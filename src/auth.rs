@@ -263,14 +263,28 @@ fn login_verify_inner(st: &AppState, req: CredentialRequest) -> Result<Response,
     let outcome = webauthn::verify_authentication(&st.cfg, &challenge, &req.credential, &credential)
         .map_err(|e| OauthError::invalid_request(format!("認証に失敗しました: {e}")))?;
 
-    st.db.with(|c| {
-        c.execute(
+    // Consume the challenge and update the credential counter in one transaction.
+    // The conditional update makes the ceremony single-use even when two valid
+    // verification requests arrive concurrently.
+    let consumed = st.db.tx(|tx| {
+        let changed = tx.execute(
+            "UPDATE flows SET challenge = ''              WHERE id = ?1 AND kind IN ('authorize', 'session')                AND challenge = ?2 AND consumed = 0 AND expires_at > ?3",
+            params![flow.id, challenge, now()],
+        )?;
+        if changed != 1 {
+            return Ok(false);
+        }
+        tx.execute(
             "UPDATE credentials SET sign_count = ?1, backup_state = ?2, last_used_at = ?3 WHERE id = ?4",
             params![outcome.sign_count, outcome.backup_state as i64, now(), credential.id],
         )?;
-        Ok(())
+        Ok(true)
     })?;
-    set_challenge(st, &flow.id, "")?;
+    if !consumed {
+        return Err(OauthError::invalid_request(
+            "ログイン要求は既に使用済みか期限切れです",
+        ));
+    }
 
     let user = st
         .db
