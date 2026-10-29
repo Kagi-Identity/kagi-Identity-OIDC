@@ -11,7 +11,7 @@
 </style>
 </head>
 <body>
-<header class="nav"><a class="brand" href="#top"><span class="logo">K</span><span>Kagi Identity <span style="font-weight:450;color:#777">/ Docs</span></span></a><nav class="navright"><a href="#quickstart">クイックスタート</a><a href="#architecture">アーキテクチャ</a><a href="https://github.com/akiy2009/kagi" target="_blank" rel="noreferrer">GitHub ↗</a><a class="pill" href="https://kagi-rp-demo-gakusei-bot.vercel.app" target="_blank" rel="noreferrer">導入デモ ↗</a></nav></header>
+<header class="nav"><a class="brand" href="#top"><span class="logo">K</span><span>Kagi Identity <span style="font-weight:450;color:#777">/ Docs</span></span></a><nav class="navright"><a href="#quickstart">クイックスタート</a><a href="#architecture">アーキテクチャ</a><a href="https://github.com/akiy2009/kagi" target="_blank" rel="noopener noreferrer">GitHub ↗</a><a class="pill" href="https://kagi-rp-demo-gakusei-bot.vercel.app" target="_blank" rel="noopener noreferrer">導入デモ ↗</a></nav></header>
 <div class="layout" id="top">
 <aside class="side" aria-label="ドキュメントナビゲーション">
 <input class="search" id="search" type="search" placeholder="ドキュメントを検索…" aria-label="ドキュメントを検索">
@@ -24,7 +24,7 @@
 <div class="eyebrow">IMPLEMENTATION GUIDE · 2026</div>
 <h1>Identity, explained.<br>Built to be tested.</h1>
 <p class="lead">Kagi Identity の仕組み、アプリケーションとの接続、デプロイ、運用時の注意点を一つにまとめた技術ドキュメントです。機能の紹介だけでなく、実際に確認すべき境界と未検証事項も明示します。</p>
-<div class="actions"><a class="btn" href="#quickstart">まず動かす →</a><a class="btn secondary" href="https://github.com/akiy2009/kagi" target="_blank" rel="noreferrer">ソースコードを見る ↗</a></div>
+<div class="actions"><a class="btn" href="#quickstart">まず動かす →</a><a class="btn secondary" href="https://github.com/akiy2009/kagi" target="_blank" rel="noopener noreferrer">ソースコードを見る ↗</a></div>
 <div class="notice warning"><strong>重要 — 本番利用について</strong><br>Kagi Identity は開発中のリファレンス実装です。CI の成功やデモの動作は、OIDC / OAuth / WebAuthn の正式な適合認証や、本番運用の安全性を保証しません。公開前に、脅威モデル・独立したセキュリティレビュー・対象仕様に沿った適合テストを実施してください。</div>
 </section>
 <section class="section" id="overview" data-search="概要 features passkey webauthn identity provider">
@@ -114,7 +114,7 @@ cargo build --locked --release</code></pre><h3>実環境の確認順</h3><ol><li
 </section>
 <section class="section" id="status" data-search="status limitations certification conformance">
 <h2>対応範囲と制約</h2><p>リポジトリの README では、WebAuthn、OIDC / OAuth 関連エンドポイント、トークン機能、PAR / DPoP 等の高度なプロファイル機能が説明されています。ただし、機能の存在と各 RFC の全要件を満たすことは別です。</p><ul><li>正式な OAuth / OIDC / FAPI / WebAuthn 適合認証を取得したと主張しない。</li><li>テスト対象のコミット、構成、データベース、実行環境を記録する。</li><li>本番利用の判断には独立したレビューとプロファイルごとのテストを含める。</li></ul>
-<div class="actions"><a class="btn" href="https://github.com/akiy2009/kagi/tree/main/docs" target="_blank" rel="noreferrer">詳細ドキュメント ↗</a><a class="btn secondary" href="https://github.com/akiy2009/kagi/issues" target="_blank" rel="noreferrer">Issue を確認 ↗</a></div>
+<div class="actions"><a class="btn" href="https://github.com/akiy2009/kagi/tree/main/docs" target="_blank" rel="noopener noreferrer">詳細ドキュメント ↗</a><a class="btn secondary" href="https://github.com/akiy2009/kagi/issues" target="_blank" rel="noopener noreferrer">Issue を確認 ↗</a></div>
 </section>
 </main></div>
 <footer class="footer"><span>Kagi Identity · Technical documentation</span><span>Documentation is informational; verify behavior against the deployed commit.</span></footer>
