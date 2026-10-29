@@ -1,12 +1,12 @@
-# kagi — a passkey-first OpenID Provider
+# Kagi Identity — Passkey-first Identity Platform
 
-`kagi` は **パスキー (WebAuthn) だけ**で認証する OpenID Connect Provider の参照実装です。
-パスワードもメール認証も持ちません。OAuth 2.1 と FAPI 2.0 の主要プロファイル
+**Kagi Identity（Kagi ID）** は、パスキー (WebAuthn) を中心に据えた OpenID Connect Provider / 認証基盤です。
+パスワードもメール認証も持ちません。OAuth 2.1 と FAPI 2.0 を意識した主要プロファイル
 (DPoP / PAR / JAR / JARM) を実装し、署名鍵は ES256、保存トークンはすべてハッシュ化しています。
 
 ```
 ┌────────────┐   1. PAR (signed + DPoP)   ┌───────────────────────┐
-│  Relying   │ ─────────────────────────▶ │  kagi                 │
+│  Relying   │ ─────────────────────────▶ │  Kagi Identity        │
 │  Party     │ ◀───────────────────────── │  /par /authorize      │
 │            │   2. request_uri           │  /token /userinfo     │
 │            │                            │  /jwks.json           │
@@ -16,6 +16,8 @@
 ```
 
 ## 特長
+
+> ブランド名は Kagi Identity ですが、既存環境との互換性のため `KAGI_*` 環境変数、`kagi.db`、`kagi_sid` Cookie、`/static/kagi.js` などの技術識別子は維持しています。段階的な移行なしに変更すると、既存のデプロイやクライアントを壊す可能性があります。
 
 | 領域 | 実装 |
 | --- | --- |
@@ -29,6 +31,14 @@
 | 導線 | 組み込みブラウザ SDK (`/static/kagi.js`)、デモ RP (`/demo`)、CORS 対応の API、`supabase/schema.sql` |
 | 鍵管理 | 起動時に ES256 鍵を自動生成、`/jwks.json` で公開、`/admin/keys/rotate` でローテーション (旧鍵は猶予期間中も公開) |
 | 堅牢性 | CSP / HSTS / nosniff / frame-ancestors、HttpOnly + SameSite=Lax セッション、CSRF トークン、全トークンの SHA-256 保存、PKCE 検証、厳密な redirect_uri 一致 |
+
+## セキュリティ上の注意
+
+- 本プロジェクトは認証基盤の参照実装です。FAPI/OIDC の認定取得済み製品として扱わないでください。
+- 本番環境では HTTPS を必須とし、`KAGI_ISSUER`、`KAGI_RP_ID`、`KAGI_ORIGIN` を実際の公開オリジンに合わせてください。
+- `KAGI_ADMIN_TOKEN` と `KAGI_REGISTRATION_TOKEN` は十分に長いランダム値を秘密管理基盤で管理し、ソース管理やログに出さないでください。
+- 複数インスタンスで運用する場合、プロセス内レート制限だけでは共有保護になりません。エッジ/WAF または共有レート制限を併用してください。
+- 鍵・DB のバックアップ、復旧演習、鍵ローテーション手順、監査ログの保管・削除ポリシーを本番投入前に定義してください。
 
 ## クイックスタート
 
@@ -75,8 +85,7 @@ cargo run --release
 | `KAGI_REFRESH_TTL` | `2592000` | リフレッシュトークン (秒) |
 | `KAGI_PAR_TTL` | `90` | `request_uri` (秒) |
 
-`KAGI_REQUIRE_PAR=1 KAGI_REQUIRE_DPOP=1` にすると、PAR + PKCE + DPoP を必須にする
-FAPI 2.0 相当の厳格モードになります。
+`KAGI_REQUIRE_PAR=1 KAGI_REQUIRE_DPOP=1` にすると、PAR + PKCE + DPoP を必須にする厳格モードになります。これは設定上の強化モードであり、FAPI 2.0 の適合認定や相互運用性試験の合格を意味するものではありません。実運用前に、利用するプロファイルに沿った適合性試験と独立したセキュリティレビューを行ってください。
 
 ## エンドポイント
 
