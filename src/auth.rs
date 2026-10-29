@@ -804,7 +804,7 @@ mod session_expiry_tests {
     #[test]
     fn idle_expiry_is_enforced_before_absolute_expiry() {
         let session = sample_session();
-        assert!(session_expired(&session, 200, 5));
+        assert!(session_expired(&session, 195, 4));
     }
 
     #[test]
