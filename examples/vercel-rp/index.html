@@ -144,6 +144,9 @@
       const redirectUri = $('redirectUri').value.trim();
       if (!clientId || !redirectUri) { $('detail').textContent = 'Client ID と Redirect URI を入力してください。'; return; }
       try {
+        sessionStorage.setItem('kagi-demo-issuer', issuer);
+        sessionStorage.setItem('kagi-demo-client-id', clientId);
+        sessionStorage.setItem('kagi-demo-redirect-uri', redirectUri);
         window.Kagi.configure({issuer,clientId,redirectUri,scope:'openid profile email'});
         window.Kagi.login();
       } catch (error) {
