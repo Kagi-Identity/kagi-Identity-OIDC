@@ -953,11 +953,18 @@ fn refresh(
 
     let new_token = random_token(32);
     let new_hash = sha256_hex(&new_token);
-    st.db.tx(|tx| {
-        tx.execute(
-            "UPDATE refresh_tokens SET revoked = 1, rotated_to = ?1 WHERE token_hash = ?2 AND revoked = 0",
-            params![new_hash, hash],
+    let rotated = st.db.tx(|tx| {
+        // A compare-and-swap is required: two concurrent requests may both
+        // have loaded the same active token before either transaction starts.
+        let changed = tx.execute(
+            "UPDATE refresh_tokens SET revoked = 1, rotated_to = ?1 \
+             WHERE token_hash = ?2 AND client_id = ?3 AND revoked = 0 \
+               AND rotated_to IS NULL AND expires_at > ?4",
+            params![new_hash, hash, client.id, now()],
         )?;
+        if changed != 1 {
+            return Ok(false);
+        }
         tx.execute(
             "INSERT INTO refresh_tokens
                 (token_hash, family_id, user_id, client_id, scope, auth_time, amr, acr,
@@ -978,8 +985,16 @@ fn refresh(
                 now() + st.cfg.refresh_ttl,
             ],
         )?;
-        Ok(())
+        Ok(true)
     })?;
+    if !rotated {
+        // Treat a lost compare-and-swap as concurrent reuse and revoke every
+        // token in the family, rather than issuing a second descendant token.
+        revoke_family(st, &row.family_id)?;
+        return Err(OauthError::invalid_grant(
+            "refresh token reuse detected; the token family has been revoked",
+        ));
+    }
 
     let (access_token, expires_in) =
         mint_access_token(st, &row.user_id, &client.id, &scope, jkt, row.session_id.as_deref())?;
