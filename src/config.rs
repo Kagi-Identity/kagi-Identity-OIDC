@@ -138,7 +138,7 @@ impl Config {
 
         Ok(Self {
             bind: non_empty("KAGI_BIND").unwrap_or_else(|| "127.0.0.1:8080".to_string()),
-            rp_name: non_empty("KAGI_RP_NAME").unwrap_or_else(|| "kagi".to_string()),
+            rp_name: non_empty("KAGI_RP_NAME").unwrap_or_else(|| "Kagi Identity".to_string()),
             db_path: non_empty("KAGI_DB").unwrap_or_else(|| "kagi.db".to_string()),
             database_url: non_empty("KAGI_DATABASE_URL").or_else(|| non_empty("DATABASE_URL")),
             allow_signup: flag("KAGI_ALLOW_SIGNUP", true),
