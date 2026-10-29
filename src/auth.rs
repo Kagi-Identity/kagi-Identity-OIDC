@@ -20,6 +20,16 @@ use std::collections::HashMap;
 pub const COOKIE_NAME: &str = "kagi_sid";
 pub const ACR_PASSKEY: &str = "urn:kagi:acr:passkey";
 
+fn session_expired(session: &Session, now: i64, idle_ttl: i64) -> bool {
+    let last_seen_at = if session.last_seen_at > 0 {
+        session.last_seen_at
+    } else {
+        session.created_at
+    };
+    session.expires_at <= now
+        || (idle_ttl > 0 && now.saturating_sub(last_seen_at) > idle_ttl)
+}
+
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
@@ -36,19 +46,9 @@ pub fn session_from_headers(st: &AppState, headers: &HeaderMap) -> Option<Sessio
                 return Ok(None);
             };
 
-            // Older databases may contain last_seen_at = 0 because that column
-            // was introduced after session creation; fall back to created_at.
-            let last_seen_at = if session.last_seen_at > 0 {
-                session.last_seen_at
-            } else {
-                session.created_at
-            };
-            // Enforce the absolute lifetime as well as the idle timeout.
-            // A recently touched session must never outlive its original expiry.
-            let absolute_expired = session.expires_at <= now;
-            let idle_expired = st.cfg.session_idle_ttl > 0
-                && now.saturating_sub(last_seen_at) > st.cfg.session_idle_ttl;
-            if absolute_expired || idle_expired {
+            // Older databases may contain last_seen_at = 0; the helper falls
+            // back to created_at and enforces both absolute and idle expiry.
+            if session_expired(&session, now, st.cfg.session_idle_ttl) {
                 db::revoke_session_tokens(c, &session.id)?;
                 db::delete_session(c, &session.id, &session.user_id)?;
                 return Ok(None);
@@ -773,4 +773,45 @@ fn add_passkey_verify_inner(
     .map_err(|e| OauthError::server_error(format!("登録を保存できませんでした: {e}")))?;
 
     Ok(Json(json!({ "ok": true })).into_response())
+}
+
+#[cfg(test)]
+mod session_expiry_tests {
+    use super::*;
+
+    fn sample_session() -> Session {
+        Session {
+            id: "session-hash".into(),
+            user_id: "user-1".into(),
+            auth_time: 100,
+            amr: vec!["passkey".into()],
+            acr: ACR_PASSKEY.into(),
+            expires_at: 200,
+            created_at: 100,
+            last_seen_at: 190,
+            user_agent: None,
+            ip: None,
+        }
+    }
+
+    #[test]
+    fn absolute_expiry_is_enforced_even_when_recently_active() {
+        let mut session = sample_session();
+        session.last_seen_at = 199;
+        assert!(session_expired(&session, 200, 180));
+    }
+
+    #[test]
+    fn idle_expiry_is_enforced_before_absolute_expiry() {
+        let session = sample_session();
+        assert!(session_expired(&session, 200, 5));
+    }
+
+    #[test]
+    fn zero_idle_timeout_disables_only_the_idle_check() {
+        let mut session = sample_session();
+        session.expires_at = 500;
+        session.last_seen_at = 100;
+        assert!(!session_expired(&session, 200, 0));
+    }
 }
