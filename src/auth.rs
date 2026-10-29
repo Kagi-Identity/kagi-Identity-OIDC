@@ -296,14 +296,14 @@ fn login_verify_inner(st: &AppState, req: CredentialRequest) -> Result<Response,
     // verification requests arrive concurrently.
     let consumed = st.db.tx(|tx| {
         let changed = tx.execute(
-            "UPDATE flows SET challenge = ''              WHERE id = ?1 AND kind IN ('authorize', 'session')                AND challenge = ?2 AND consumed = 0 AND expires_at > ?3",
+            "UPDATE flows SET challenge = '' WHERE id = ?1 AND kind IN ('authorize', 'session') AND challenge = ?2 AND consumed = 0 AND expires_at > ?3",
             params![flow.id, challenge, now()],
         )?;
         if changed != 1 {
             return Ok(false);
         }
         let credential_updated = tx.execute(
-            "UPDATE credentials SET sign_count = ?1, backup_state = ?2, last_used_at = ?3              WHERE id = ?4 AND sign_count = ?5",
+            "UPDATE credentials SET sign_count = ?1, backup_state = ?2, last_used_at = ?3 WHERE id = ?4 AND sign_count = ?5",
             params![
                 outcome.sign_count,
                 outcome.backup_state as i64,
