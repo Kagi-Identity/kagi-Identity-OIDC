@@ -18,12 +18,17 @@ a{color:#111}
   if(params.has('error')){title.textContent='認証に失敗しました';message.textContent=params.get('error_description')||params.get('error');return;}
   const issuer=sessionStorage.getItem('kagi-demo-issuer');
   const clientId=sessionStorage.getItem('kagi-demo-client-id');
-  const redirectUri=location.origin+'/callback.html';
+  const redirectUri=sessionStorage.getItem('kagi-demo-redirect-uri')||location.origin+'/callback.html';
   if(!issuer||!clientId){title.textContent='設定が見つかりません';message.textContent='ログインを開始したタブでサンプルに戻り、接続設定を確認してください。';return;}
   try{
-    const response=await fetch(issuer+'/static/kagi.js');
-    if(!response.ok)throw new Error('SDK HTTP '+response.status);
-    const script=document.createElement('script');script.textContent=await response.text();document.head.appendChild(script);
+    await new Promise((resolve,reject)=>{
+      const script=document.createElement('script');
+      script.src=issuer+'/static/kagi.js';
+      script.async=true;
+      script.onload=resolve;
+      script.onerror=()=>reject(new Error('Identity の Browser SDK を読み込めませんでした'));
+      document.head.appendChild(script);
+    });
     Kagi.configure({issuer,clientId,redirectUri,scope:'openid profile email'});
     const session=await Kagi.handleCallback();
     const profile=await Kagi.userinfo();
