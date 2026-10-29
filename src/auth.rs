@@ -28,7 +28,34 @@ pub fn session_from_headers(st: &AppState, headers: &HeaderMap) -> Option<Sessio
     let cookies = parse_cookies(headers);
     let sid = cookies.get(COOKIE_NAME)?;
     let hash = sha256_hex(sid);
-    st.db.with(|c| db::load_session(c, &hash)).ok().flatten()
+    let now = now();
+
+    st.db
+        .with(|c| {
+            let Some(session) = db::load_session(c, &hash)? else {
+                return Ok(None);
+            };
+
+            // Older databases may contain last_seen_at = 0 because that column
+            // was introduced after session creation; fall back to created_at.
+            let last_seen_at = if session.last_seen_at > 0 {
+                session.last_seen_at
+            } else {
+                session.created_at
+            };
+            if st.cfg.session_idle_ttl > 0
+                && now.saturating_sub(last_seen_at) > st.cfg.session_idle_ttl
+            {
+                db::revoke_session_tokens(c, &session.id)?;
+                db::delete_session(c, &session.id, &session.user_id)?;
+                return Ok(None);
+            }
+
+            db::touch_session(c, &session.id, now)?;
+            Ok(Some(session))
+        })
+        .ok()
+        .flatten()
 }
 
 fn create_session(
@@ -42,8 +69,8 @@ fn create_session(
     let expires_at = auth_time + st.cfg.session_ttl;
     st.db.with(|c| {
         c.execute(
-            "INSERT INTO sessions (id, user_id, auth_time, amr, acr, expires_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO sessions (id, user_id, auth_time, amr, acr, expires_at, created_at, last_seen_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 id,
                 user_id,
@@ -51,6 +78,7 @@ fn create_session(
                 serde_json::to_string(&amr).unwrap_or_else(|_| "[]".into()),
                 ACR_PASSKEY,
                 expires_at,
+                auth_time,
                 auth_time,
             ],
         )?;
