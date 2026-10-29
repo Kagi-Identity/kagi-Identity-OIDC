@@ -302,11 +302,17 @@ fn login_verify_inner(st: &AppState, req: CredentialRequest) -> Result<Response,
         if changed != 1 {
             return Ok(false);
         }
-        tx.execute(
-            "UPDATE credentials SET sign_count = ?1, backup_state = ?2, last_used_at = ?3 WHERE id = ?4",
-            params![outcome.sign_count, outcome.backup_state as i64, now(), credential.id],
+        let credential_updated = tx.execute(
+            "UPDATE credentials SET sign_count = ?1, backup_state = ?2, last_used_at = ?3              WHERE id = ?4 AND sign_count = ?5",
+            params![
+                outcome.sign_count,
+                outcome.backup_state as i64,
+                now(),
+                credential.id,
+                credential.sign_count,
+            ],
         )?;
-        Ok(true)
+        Ok(credential_updated == 1)
     })?;
     if !consumed {
         return Err(OauthError::invalid_request(
