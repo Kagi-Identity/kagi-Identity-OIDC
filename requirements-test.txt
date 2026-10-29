@@ -1,0 +1,4 @@
+requests>=2.32,<3
+cryptography>=44,<47
+# Optional, only when running E2E scripts against PostgreSQL/Supabase:
+psycopg2-binary>=2.9,<3
