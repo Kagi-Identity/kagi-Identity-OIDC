@@ -61,12 +61,11 @@ async function fetchJson(url,timeoutMs=6500){
 async function diagnose(){
  metadata=null;$('login').disabled=true;$('login').textContent='接続診断中…';
  for(const id of ['health','discovery','issuer','jwks'])status(id,null,'確認中');
- status('secure',window.isSecureContext,null?'':'OK');
  status('secure',window.isSecureContext,window.isSecureContext?'OK':'HTTPS が必要');
  const base=issuerUrl();
  if(!/^https:\/\//i.test(base)){status('health',false,'HTTPS URL が必要');status('discovery',false,'Issuer を確認');status('issuer',false,'Issuer 不正');status('jwks',false,'未確認');$('diagnosis').innerHTML='<strong>接続先 URL が不正です。</strong><br>HTTPS の Issuer URL を指定してください。';log('Issuer URL must start with https://');return;}
  let healthOk=false,discoveryOk=false,jwksOk=false,errors=[];
- try{const health=await fetchJson(base+'/healthz');healthOk=true;status('health',true,'OK');}
+ try{await fetchJson(base+'/healthz');healthOk=true;status('health',true,'OK');}
  catch(e){status('health',false,'失敗');errors.push('/healthz: '+e.message);}
  try{metadata=await fetchJson(base+'/.well-known/openid-configuration');discoveryOk=true;status('discovery',true,'OK');
   const issuerOk=metadata.issuer===base;status('issuer',issuerOk,issuerOk?'完全一致':'不一致');if(!issuerOk)errors.push('Discovery issuer が設定 URL と一致しません: '+String(metadata.issuer));
