@@ -25,7 +25,7 @@ impl KeyRing {
     pub fn load(db: &Db) -> anyhow::Result<Self> {
         let raw: Vec<(String, String)> = db.with(|c| {
             let rows = c.query_all(
-                "SELECT kid, private_jwk FROM signing_keys ORDER BY created_at DESC, kid DESC",
+                "SELECT kid, private_jwk FROM signing_keys ORDER BY active DESC, created_at DESC, kid DESC",
                 params![],
             )?;
             rows.iter()
