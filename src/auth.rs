@@ -185,10 +185,11 @@ fn insert_flow(
 
 fn set_challenge(st: &AppState, rid: &str, challenge: &str) -> anyhow::Result<()> {
     st.db.with(|c| {
-        c.execute(
-            "UPDATE flows SET challenge = ?1 WHERE id = ?2 AND consumed = 0",
-            params![challenge, rid],
+        let changed = c.execute(
+            "UPDATE flows SET challenge = ?1 WHERE id = ?2 AND consumed = 0 AND expires_at > ?3",
+            params![challenge, rid, now()],
         )?;
+        anyhow::ensure!(changed == 1, "flow is consumed or expired");
         Ok(())
     })?;
     Ok(())
@@ -478,6 +479,16 @@ fn signup_verify_inner(st: &AppState, req: CredentialRequest) -> Result<Response
         .map_err(|e| OauthError::invalid_request(format!("パスキーの登録に失敗しました: {e}")))?;
 
     st.db.tx(|tx| {
+        // Claim the registration ceremony before creating any account data.
+        // The conditional update makes the flow single-use under concurrency.
+        let claimed = tx.execute(
+            "UPDATE flows SET consumed = 1, challenge = '' \
+             WHERE id = ?1 AND kind = 'signup' AND challenge = ?2 \
+               AND consumed = 0 AND expires_at > ?3",
+            params![flow.id, challenge, now()],
+        )?;
+        anyhow::ensure!(claimed == 1, "registration flow already consumed or expired");
+
         tx.execute(
             "INSERT INTO users (id, username, display_name, email, email_verified, created_at)
              VALUES (?1, ?2, ?3, ?4, 0, ?5)",
@@ -501,10 +512,6 @@ fn signup_verify_inner(st: &AppState, req: CredentialRequest) -> Result<Response
                 "最初のパスキー",
                 now(),
             ],
-        )?;
-        tx.execute(
-            "UPDATE flows SET consumed = 1 WHERE id = ?1",
-            params![flow.id],
         )?;
         Ok(())
     })
@@ -727,6 +734,15 @@ fn add_passkey_verify_inner(
         .map_err(|e| OauthError::invalid_request(format!("パスキーの登録に失敗しました: {e}")))?;
 
     st.db.tx(|tx| {
+        // Claim the passkey-registration ceremony before inserting the key.
+        let claimed = tx.execute(
+            "UPDATE flows SET consumed = 1, challenge = '' \
+             WHERE id = ?1 AND kind = 'addpasskey' AND user_id = ?2 \
+               AND challenge = ?3 AND consumed = 0 AND expires_at > ?4",
+            params![flow.id, user.id, challenge, now()],
+        )?;
+        anyhow::ensure!(claimed == 1, "passkey flow already consumed or expired");
+
         tx.execute(
             "INSERT INTO credentials
                 (id, user_id, public_key, key_type, sign_count, transports, aaguid,
@@ -746,7 +762,6 @@ fn add_passkey_verify_inner(
                 now(),
             ],
         )?;
-        tx.execute("UPDATE flows SET consumed = 1 WHERE id = ?1", params![flow.id])?;
         Ok(())
     })
     .map_err(|e| OauthError::server_error(format!("登録を保存できませんでした: {e}")))?;
