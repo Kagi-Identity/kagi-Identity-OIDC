@@ -91,12 +91,14 @@
     }
     async function loadSdk(issuer) {
       if (window.Kagi && sdkLoaded) return;
-      const response = await fetch(issuer + '/static/kagi.js', {cache:'no-store'});
-      if (!response.ok) throw new Error('Browser SDK の取得に失敗しました (HTTP ' + response.status + ')');
-      const source = await response.text();
-      const script = document.createElement('script');
-      script.textContent = source;
-      document.head.appendChild(script);
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = issuer + '/static/kagi.js';
+        script.async = true;
+        script.onload = resolve;
+        script.onerror = () => reject(new Error('Browser SDK を読み込めません。Identity の URL と配信状態を確認してください。'));
+        document.head.appendChild(script);
+      });
       if (!window.Kagi) throw new Error('SDK が初期化されませんでした');
       sdkLoaded = true;
     }
