@@ -13,6 +13,7 @@ use std::sync::Mutex;
 struct Bucket {
     start: i64,
     count: u32,
+    window: i64,
 }
 
 #[derive(Default)]
@@ -31,14 +32,21 @@ impl RateLimiter {
         let now = crate::util::now();
         let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Keep the map bounded if an attacker rotates keys.
-        if buckets.len() > 20_000 {
-            buckets.retain(|_, b| now - b.start < window.max(60));
+        // Prune expired entries before accepting new keys. If an attacker
+        // rotates source keys faster than windows expire, reject new keys once
+        // the cap is reached instead of allowing unbounded memory growth.
+        const MAX_BUCKETS: usize = 20_000;
+        if buckets.len() >= MAX_BUCKETS {
+            buckets.retain(|_, b| now.saturating_sub(b.start) < b.window.max(60));
+            if buckets.len() >= MAX_BUCKETS && !buckets.contains_key(key) {
+                return false;
+            }
         }
 
         let bucket = buckets.entry(key.to_string()).or_insert(Bucket {
             start: now,
             count: 0,
+            window,
         });
         if now - bucket.start >= window {
             bucket.start = now;
@@ -80,5 +88,16 @@ mod tests {
         assert!(limiter.allow("ip:login", 2, 60));
         assert!(!limiter.allow("ip:login", 2, 60));
         assert!(limiter.allow("ip:other", 2, 60));
+    }
+
+    #[test]
+    fn refuses_new_keys_when_bucket_cap_is_reached() {
+        let limiter = RateLimiter::new();
+        for i in 0..20_000 {
+            assert!(limiter.allow(&format!("ip:{i}"), 1, 3600));
+        }
+        assert!(!limiter.allow("ip:overflow", 1, 3600));
+        // Existing keys remain usable within their own quota.
+        assert!(!limiter.allow("ip:0", 1, 3600));
     }
 }
