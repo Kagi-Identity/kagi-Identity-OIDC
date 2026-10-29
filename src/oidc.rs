@@ -400,6 +400,15 @@ fn resolve_request_object(
             "request object iss must equal client_id",
         ));
     }
+    // If client_id is repeated inside the signed request object, it must not
+    // override the client whose key was used to verify the signature.
+    if let Some(request_client_id) = claims.get("client_id").and_then(Value::as_str) {
+        if request_client_id != client.id {
+            return Err(OauthError::invalid_request(
+                "request object client_id does not match the outer client_id",
+            ));
+        }
+    }
     let aud_ok = match claims.get("aud") {
         Some(Value::String(s)) => s == &st.cfg.issuer,
         Some(Value::Array(a)) => a.iter().any(|v| v.as_str() == Some(st.cfg.issuer.as_str())),
