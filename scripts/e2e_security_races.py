@@ -19,7 +19,7 @@ import requests
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 
-BASE = os.environ.get("KAGI_BASE", "http://127.0.0.1:8080").rstrip("/")
+BASE = os.environ.get("KAGI_BASE", "http://localhost:8080").rstrip("/")
 DB = os.environ.get("KAGI_DB", "kagi-security-e2e.db")
 ADMIN = os.environ.get("KAGI_ADMIN_TOKEN", "test-admin")
 CLIENT = "demo-web"
