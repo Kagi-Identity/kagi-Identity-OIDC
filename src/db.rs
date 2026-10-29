@@ -1588,3 +1588,16 @@ pub fn seed_demo_client(c: &Connection) -> anyhow::Result<()> {
     )?;
     Ok(())
 }
+
+
+#[cfg(test)]
+mod schema_regression_tests {
+    #[test]
+    fn postgres_schema_contains_runtime_security_tables_and_columns() {
+        let schema = super::POSTGRES_SCHEMA;
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS last_seen_at"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS session_id"));
+        assert!(schema.contains("CREATE TABLE IF NOT EXISTS audit_events"));
+        assert!(schema.contains("CREATE TABLE IF NOT EXISTS recovery_codes"));
+    }
+}
