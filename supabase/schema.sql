@@ -148,3 +148,36 @@ CREATE TABLE IF NOT EXISTS assertion_replay (
     jti         TEXT PRIMARY KEY,
     expires_at  BIGINT NOT NULL
 );
+
+-- Forward-compatible upgrades for databases created by earlier releases.
+-- CREATE TABLE IF NOT EXISTS does not add columns to an existing table.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen_at BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS user_agent TEXT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ip TEXT;
+ALTER TABLE access_tokens ADD COLUMN IF NOT EXISTS session_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_at_session ON access_tokens(session_id);
+
+-- Security event history and one-time recovery codes are used by the
+-- application and must exist on PostgreSQL just as they do on SQLite.
+CREATE TABLE IF NOT EXISTS audit_events (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT,
+    client_id   TEXT,
+    kind        TEXT NOT NULL,
+    detail      TEXT,
+    ip          TEXT,
+    user_agent  TEXT,
+    created_at  BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_events(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at);
+
+CREATE TABLE IF NOT EXISTS recovery_codes (
+    code_hash   TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at  BIGINT NOT NULL,
+    used_at     BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_user ON recovery_codes(user_id);

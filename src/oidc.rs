@@ -400,6 +400,15 @@ fn resolve_request_object(
             "request object iss must equal client_id",
         ));
     }
+    // If client_id is repeated inside the signed request object, it must not
+    // override the client whose key was used to verify the signature.
+    if let Some(request_client_id) = claims.get("client_id").and_then(Value::as_str) {
+        if request_client_id != client.id {
+            return Err(OauthError::invalid_request(
+                "request object client_id does not match the outer client_id",
+            ));
+        }
+    }
     let aud_ok = match claims.get("aud") {
         Some(Value::String(s)) => s == &st.cfg.issuer,
         Some(Value::Array(a)) => a.iter().any(|v| v.as_str() == Some(st.cfg.issuer.as_str())),
@@ -929,6 +938,37 @@ fn refresh(
     if row.expires_at < now() {
         return Err(OauthError::invalid_grant("refresh token expired"));
     }
+
+    // A refresh token issued from a browser session must not outlive that
+    // session's absolute or idle lifetime. This check is server-side; it does
+    // not depend on the browser still sending its session cookie.
+    if let Some(session_id) = row.session_id.as_deref() {
+        let session = st.db.with(|c| db::load_session(c, session_id))?;
+        let session_active = session.as_ref().is_some_and(|session| {
+            let last_seen = if session.last_seen_at > 0 {
+                session.last_seen_at
+            } else {
+                session.created_at
+            };
+            st.cfg.session_idle_ttl == 0
+                || now().saturating_sub(last_seen) <= st.cfg.session_idle_ttl
+        });
+        if !session_active {
+            st.db.tx(|tx| {
+                db::revoke_session_tokens(tx, session_id)?;
+                tx.execute(
+                    "UPDATE refresh_tokens SET revoked = 1 WHERE family_id = ?1",
+                    params![row.family_id],
+                )?;
+                tx.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])?;
+                Ok(())
+            })?;
+            return Err(OauthError::invalid_grant(
+                "the browser session has expired; sign in again",
+            ));
+        }
+    }
+
     match (&row.dpop_jkt, jkt) {
         (Some(bound), Some(present)) if bound.as_str() == present => {}
         (Some(_), _) => {
@@ -953,11 +993,18 @@ fn refresh(
 
     let new_token = random_token(32);
     let new_hash = sha256_hex(&new_token);
-    st.db.tx(|tx| {
-        tx.execute(
-            "UPDATE refresh_tokens SET revoked = 1, rotated_to = ?1 WHERE token_hash = ?2 AND revoked = 0",
-            params![new_hash, hash],
+    let rotated = st.db.tx(|tx| {
+        // A compare-and-swap is required: two concurrent requests may both
+        // have loaded the same active token before either transaction starts.
+        let changed = tx.execute(
+            "UPDATE refresh_tokens SET revoked = 1, rotated_to = ?1 \
+             WHERE token_hash = ?2 AND client_id = ?3 AND revoked = 0 \
+               AND rotated_to IS NULL AND expires_at > ?4",
+            params![new_hash, hash, client.id, now()],
         )?;
+        if changed != 1 {
+            return Ok(false);
+        }
         tx.execute(
             "INSERT INTO refresh_tokens
                 (token_hash, family_id, user_id, client_id, scope, auth_time, amr, acr,
@@ -978,8 +1025,16 @@ fn refresh(
                 now() + st.cfg.refresh_ttl,
             ],
         )?;
-        Ok(())
+        Ok(true)
     })?;
+    if !rotated {
+        // Treat a lost compare-and-swap as concurrent reuse and revoke every
+        // token in the family, rather than issuing a second descendant token.
+        revoke_family(st, &row.family_id)?;
+        return Err(OauthError::invalid_grant(
+            "refresh token reuse detected; the token family has been revoked",
+        ));
+    }
 
     let (access_token, expires_in) =
         mint_access_token(st, &row.user_id, &client.id, &scope, jkt, row.session_id.as_deref())?;
@@ -1127,8 +1182,8 @@ fn mint_access_token(
     st.db.with(|c| {
         c.execute(
             "INSERT INTO access_tokens
-                (jti, user_id, client_id, scope, audience, dpop_jkt, subject, issued_at, expires_at, revoked)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)",
+                (jti, user_id, client_id, scope, audience, dpop_jkt, subject, session_id, issued_at, expires_at, revoked)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)",
             params![
                 jti,
                 subject,
@@ -1137,6 +1192,7 @@ fn mint_access_token(
                 st.cfg.issuer,
                 jkt,
                 subject,
+                session_id,
                 issued_at,
                 expires_at,
             ],
