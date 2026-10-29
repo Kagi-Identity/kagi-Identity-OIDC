@@ -43,9 +43,12 @@ pub fn session_from_headers(st: &AppState, headers: &HeaderMap) -> Option<Sessio
             } else {
                 session.created_at
             };
-            if st.cfg.session_idle_ttl > 0
-                && now.saturating_sub(last_seen_at) > st.cfg.session_idle_ttl
-            {
+            // Enforce the absolute lifetime as well as the idle timeout.
+            // A recently touched session must never outlive its original expiry.
+            let absolute_expired = session.expires_at <= now;
+            let idle_expired = st.cfg.session_idle_ttl > 0
+                && now.saturating_sub(last_seen_at) > st.cfg.session_idle_ttl;
+            if absolute_expired || idle_expired {
                 db::revoke_session_tokens(c, &session.id)?;
                 db::delete_session(c, &session.id, &session.user_id)?;
                 return Ok(None);
