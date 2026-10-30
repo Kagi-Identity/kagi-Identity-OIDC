@@ -21,7 +21,7 @@ At minimum:
 - Disable demo-client seeding in production and deliberately choose the account-signup policy.
 - Store administrative and registration tokens in a secret manager; rotate them if exposure is suspected.
 - Keep Rust dependencies updated and review automated dependency updates before deployment.
-- Enforce request limits and shared edge/WAF rate limiting. The in-process limiter is not shared between instances.
+- Keep edge/WAF request and body-size limits enabled. The application uses atomic PostgreSQL-backed rate-limit counters; configure a trusted proxy and exact `KAGI_CORS_ORIGINS` allowlist.
 - Protect database access, signing keys, backups, and restore credentials; test recovery procedures.
 - Do not log tokens, authorization codes, session identifiers, or credential material.
 - Run independent security review and the exact OAuth/OIDC/FAPI conformance tests relevant to the intended profile.
