@@ -563,7 +563,8 @@ pub async fn rotate_keys(State(st): State<AppState>, headers: HeaderMap) -> Resp
 
 pub async fn health(State(st): State<AppState>) -> Response {
     let ready = st.db.with(|conn| {
-        let _: i64 = conn.query_row("SELECT 1", params![], |row| row.get(0))?;
+        let _: i64 = conn.query_row("SELECT COUNT(*) FROM rate_limits", params![], |row| row.get(0))?;
+        let _: i64 = conn.query_row("SELECT COUNT(*) FROM signing_keys", params![], |row| row.get(0))?;
         Ok(())
     }).is_ok();
 
