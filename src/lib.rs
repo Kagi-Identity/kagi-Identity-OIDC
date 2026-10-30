@@ -23,6 +23,7 @@ use db::params;
 use keys::KeyRing;
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::Duration;
 use tokio::net::TcpListener;
 
 #[derive(Clone)]
@@ -68,6 +69,7 @@ pub fn build_state() -> anyhow::Result<AppState> {
         db.with(|c| db::seed_demo_client(c))?;
     }
 
+    db.sweep()?;
     let ring = KeyRing::load(&db)?;
     Ok(AppState {
         cfg,
@@ -315,6 +317,16 @@ pub async fn run_local() -> anyhow::Result<()> {
         db.with(|c| db::seed_demo_client(c))?;
     }
     let ring = KeyRing::load(&db)?;
+    let sweep_db = db.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(300));
+        loop {
+            tick.tick().await;
+            if let Err(error) = sweep_db.sweep() {
+                eprintln!("[kagi] periodic cleanup failed: {error}");
+            }
+        }
+    });
     let state = AppState { cfg: cfg.clone(), db: db.clone(), keys: Arc::new(RwLock::new(ring)), last_key_refresh: Arc::new(AtomicI64::new(util::now())) };
     let app = routes(state);
     let listener = TcpListener::bind(&cfg.bind).await?;
