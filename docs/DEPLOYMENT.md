@@ -53,6 +53,7 @@ KAGI_ISSUER=https://your-identity-domain.example
 KAGI_ORIGIN=https://your-identity-domain.example
 KAGI_RP_ID=your-identity-domain.example
 KAGI_DATABASE_URL=<TLS-enabled PostgreSQL pooler URL>
+KAGI_AUTO_MIGRATE=0
 KAGI_COOKIE_SECURE=1
 KAGI_HSTS=1
 KAGI_SEED_DEMO=0
@@ -64,7 +65,7 @@ KAGI_ADMIN_TOKEN=<random secret, 32+ characters>
 KAGI_REGISTRATION_TOKEN=<different random secret, 32+ characters>
 ```
 
-Use a managed PostgreSQL pooler for serverless connection limits. Each warm function instance currently maintains one serialized database connection; this is safe for correctness but is not a high-throughput connection pool. Validate provider connection limits and load-test before production traffic.
+Before deploying, apply `supabase/schema.sql` once using your database's migration workflow, then set `KAGI_AUTO_MIGRATE=0`. This avoids concurrent DDL races when multiple serverless instances cold-start. Each warm function instance currently maintains one serialized database connection; use a managed PostgreSQL pooler for serverless connection limits and load-test before production traffic.
 
 ## 4. Secrets
 
