@@ -126,6 +126,7 @@ fn routes_and_security(state: AppState) -> Router {
 
 fn api_path(path: &str) -> bool {
     path.starts_with("/.well-known/")
+        || path.starts_with("/api/webauthn/")
         || matches!(
             path,
             "/jwks.json"
