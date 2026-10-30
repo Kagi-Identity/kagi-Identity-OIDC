@@ -27,7 +27,7 @@ tower = "0.5"
 vercel_runtime = { version = "2.4", features = ["axum"] }
 
 [[bin]]
-name = "index"
+name = "main"
 path = "api/index.rs"
 
 [profile.release]
