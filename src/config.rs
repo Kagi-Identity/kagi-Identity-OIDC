@@ -30,7 +30,7 @@ pub struct Config {
     /// Trust the first `X-Forwarded-For` hop. Enable only behind a proxy that
     /// overwrites the header.
     pub trust_proxy: bool,
-    /// Enable the in-process rate limiter.
+    /// Enable the shared PostgreSQL-backed rate limiter.
     pub rate_limit: bool,
     /// Enable single-use recovery codes as a passkey fallback.
     pub recovery_enabled: bool,
@@ -126,10 +126,19 @@ impl Config {
             .map(|raw| raw.split(',').map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).collect())
             .unwrap_or_default();
         for origin in &cors_origins {
-            anyhow::ensure!(origin.starts_with("https://") && !origin.contains('*') && !origin.ends_with('/'),
-                "KAGI_CORS_ORIGINS must contain exact HTTPS origins without paths or wildcards");
-            anyhow::ensure!(!origin.contains('?') && !origin.contains('#'),
-                "KAGI_CORS_ORIGINS entries must not contain query strings or fragments");
+            let host = origin.strip_prefix("https://").unwrap_or("");
+            anyhow::ensure!(
+                !host.is_empty()
+                    && !host.contains('/')
+                    && !host.contains('@')
+                    && !host.contains(' ')
+                    && !origin.contains('*'),
+                "KAGI_CORS_ORIGINS must contain exact HTTPS origins without paths, credentials, or wildcards"
+            );
+            anyhow::ensure!(
+                !origin.contains('?') && !origin.contains('#'),
+                "KAGI_CORS_ORIGINS entries must not contain query strings or fragments"
+            );
         }
 
         for (name, value) in [
