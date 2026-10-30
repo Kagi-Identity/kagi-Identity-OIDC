@@ -12,7 +12,7 @@ pub struct SigKey {
 impl SigKey {
     pub fn public_jwk(&self) -> Value {
         let vk = self.key.verifying_key();
-        let point = vk.to_encoded_point(false);
+        let point = vk.to_sec1_point(false);
         let x = point.x().expect("uncompressed point has x");
         let y = point.y().expect("uncompressed point has y");
         json!({
@@ -214,11 +214,10 @@ pub fn jwk_kid(jwk: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::SysRng;
 
     #[test]
     fn sign_and_verify_roundtrip() {
-        let sk = p256::ecdsa::SigningKey::random(&mut SysRng);
+        let sk = crate::util::random_p256_signing_key();
         let key = SigKey { kid: "k1".into(), key: sk };
         let token = key.sign(Some("JWT"), &json!({"sub": "alice"})).unwrap();
         let (h, c) = verify_with_jwk(&key.public_jwk(), &token, Some("JWT")).unwrap();
@@ -228,7 +227,7 @@ mod tests {
 
     #[test]
     fn tampered_token_is_rejected() {
-        let sk = p256::ecdsa::SigningKey::random(&mut OsRng);
+        let sk = crate::util::random_p256_signing_key();
         let key = SigKey { kid: "k1".into(), key: sk };
         let token = key.sign(None, &json!({"sub": "alice"})).unwrap();
         let mut parts: Vec<String> = token.split('.').map(String::from).collect();
@@ -239,7 +238,7 @@ mod tests {
 
     #[test]
     fn thumbprint_is_stable() {
-        let sk = p256::ecdsa::SigningKey::random(&mut OsRng);
+        let sk = crate::util::random_p256_signing_key();
         let key = SigKey { kid: "k1".into(), key: sk };
         let a = thumbprint(&key.public_jwk()).unwrap();
         let b = thumbprint(&key.public_jwk()).unwrap();
