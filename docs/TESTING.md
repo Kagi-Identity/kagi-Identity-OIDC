@@ -43,6 +43,7 @@ In another terminal, use the same `KAGI_DB` value for tests that seed database r
 KAGI_DB=kagi-e2e.db python scripts/e2e_oidc.py
 KAGI_DB=kagi-e2e.db python scripts/e2e_advanced.py
 KAGI_DB=kagi-e2e.db python scripts/e2e_security_races.py
+python scripts/e2e_rate_limit.py
 python scripts/e2e_webauthn.py
 python scripts/e2e_admin.py
 ```
@@ -60,6 +61,7 @@ On Windows, use PowerShell to set environment variables before invoking each com
 | `e2e_webauthn.py` | Passkey signup/sign-in using a software authenticator, challenge/origin/type validation, signature/counter checks |
 | `e2e_admin.py` | Dynamic registration gate, private_key_jwt, JAR, key rotation, logout redirect validation |
 | `e2e_security_races.py` | Concurrent authorization-code exchange, concurrent DPoP proof replay, key rotation/JWKS overlap, OIDC discovery sanity checks |
+| `e2e_rate_limit.py` | Shared fixed-window rate-limit enforcement and HTTP 429 behavior |
 
 The security-race script checks that exactly one concurrent authorization-code exchange succeeds and that a shared DPoP proof is accepted only once. It also checks a focused set of discovery metadata invariants. These are regression tests, not a complete normative test suite.
 
