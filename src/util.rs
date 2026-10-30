@@ -1,5 +1,4 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,11 +13,22 @@ pub fn now() -> i64 {
 
 pub fn random_bytes(n: usize) -> Vec<u8> {
     let mut buf = vec![0u8; n];
-    rand::rngs::OsRng.fill_bytes(&mut buf);
+    getrandom::fill(&mut buf).expect("operating-system CSPRNG unavailable");
     buf
 }
 
 /// URL-safe, unpadded base64 of `n` random bytes.
+/// Generate a valid P-256 signing key from the operating-system CSPRNG.
+/// Invalid scalars are discarded and sampled again.
+pub fn random_p256_signing_key() -> p256::ecdsa::SigningKey {
+    loop {
+        let candidate = random_bytes(32);
+        if let Ok(key) = p256::ecdsa::SigningKey::from_slice(&candidate) {
+            return key;
+        }
+    }
+}
+
 pub fn random_token(n: usize) -> String {
     b64(&random_bytes(n))
 }
