@@ -219,7 +219,7 @@ async fn harden(State(st): State<AppState>, req: Request, next: Next) -> Respons
         };
         let mut response = StatusCode::NO_CONTENT.into_response();
         let headers = response.headers_mut();
-        headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_str(origin).unwrap_or_else(|_| HeaderValue::from_static("null")));
+        headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_str(&origin).unwrap_or_else(|_| HeaderValue::from_static("null")));
         headers.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, OPTIONS"));
         headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("authorization, content-type, dpop"));
         headers.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
