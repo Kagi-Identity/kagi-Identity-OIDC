@@ -203,11 +203,11 @@ async fn harden(State(st): State<AppState>, req: Request, next: Next) -> Respons
     }
 
     let is_api = api_path(req.uri().path());
-    let origin = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok());
-    let allowed_origin = origin.filter(|origin| {
+    let origin = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let allowed_origin = origin.as_deref().filter(|origin| {
         st.cfg.cors_origins.iter().any(|allowed| allowed == *origin)
             || (st.cfg.is_local() && st.cfg.cors_origins.is_empty())
-    });
+    }).map(str::to_owned);
     if is_api && origin.is_some() && allowed_origin.is_none() {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -261,7 +261,7 @@ async fn harden(State(st): State<AppState>, req: Request, next: Next) -> Respons
         );
     }
     if is_api {
-        if let Some(origin) = allowed_origin {
+        if let Some(origin) = allowed_origin.as_deref() {
             if let Ok(value) = HeaderValue::from_str(origin) {
                 headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
                 headers.insert(header::VARY, HeaderValue::from_static("Origin"));
