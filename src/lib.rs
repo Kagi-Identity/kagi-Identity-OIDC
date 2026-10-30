@@ -77,7 +77,6 @@ pub fn routes(state: AppState) -> Router {
 
 fn routes_and_security(state: AppState) -> Router {
     Router::new()
-    Router::new()
         .route("/", get(auth::account))
         .route("/login", get(auth::login_page))
         .route("/signup", get(auth::signup_page))
@@ -112,6 +111,7 @@ fn routes_and_security(state: AppState) -> Router {
         .route("/static/style.css", get(style_css))
         .fallback(not_found)
         .with_state(state)
+        .layer(middleware::from_fn(harden))
 }
 
 fn api_path(path: &str) -> bool {
