@@ -27,7 +27,7 @@ tower = "0.5"
 vercel_runtime = { version = "2.4", features = ["axum"] }
 
 [[bin]]
-name = "kagi-vercel"
+name = "index"
 path = "api/index.rs"
 
 [profile.release]
