@@ -21,6 +21,7 @@ use config::Config;
 use db::Db;
 use keys::KeyRing;
 use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicI64, Ordering};
 use tokio::net::TcpListener;
 
 #[derive(Clone)]
@@ -28,6 +29,7 @@ pub struct AppState {
     pub cfg: Arc<Config>,
     pub db: Arc<Db>,
     pub keys: Arc<RwLock<KeyRing>>,
+    pub last_key_refresh: Arc<AtomicI64>,
 }
 
 /// Initialize state once per process/function instance. All durable state,
@@ -66,6 +68,7 @@ pub fn build_state() -> anyhow::Result<AppState> {
         cfg,
         db,
         keys: Arc::new(RwLock::new(ring)),
+        last_key_refresh: Arc::new(AtomicI64::new(util::now())),
     })
 }
 
@@ -110,7 +113,7 @@ fn routes_and_security(state: AppState) -> Router {
         .route("/static/style.css", get(style_css))
         .fallback(not_found)
         .with_state(state)
-        .layer(middleware::from_fn(harden))
+        .layer(middleware::from_fn_with_state(state, harden))
 }
 
 fn api_path(path: &str) -> bool {
@@ -128,24 +131,40 @@ fn api_path(path: &str) -> bool {
         )
 }
 
-async fn harden(req: Request, next: Next) -> Response {
+async fn harden(State(st): State<AppState>, req: Request, next: Next) -> Response {
+    // Each warm Vercel instance refreshes the shared signing-key view regularly.
+    // This keeps independently scaled instances convergent after key rotation.
+    let now = util::now();
+    let refreshed = st.last_key_refresh.load(Ordering::Relaxed);
+    if now.saturating_sub(refreshed) >= 5
+        && st.last_key_refresh.compare_exchange(refreshed, now, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+    {
+        match KeyRing::load(&st.db) {
+            Ok(ring) => *st.keys.write().unwrap_or_else(|e| e.into_inner()) = ring,
+            Err(error) => eprintln!("[kagi] signing-key refresh failed: {error}"),
+        }
+    }
+
     let is_api = api_path(req.uri().path());
+    let origin = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok());
+    let allowed_origin = origin.filter(|origin| {
+        st.cfg.cors_origins.iter().any(|allowed| allowed == *origin)
+            || (st.cfg.is_local() && st.cfg.cors_origins.is_empty())
+    });
     let preflight = req.method() == Method::OPTIONS && is_api;
 
     if preflight {
-        return (
-            StatusCode::NO_CONTENT,
-            [
-                (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
-                (header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, OPTIONS"),
-                (
-                    header::ACCESS_CONTROL_ALLOW_HEADERS,
-                    "authorization, content-type, dpop",
-                ),
-                (header::ACCESS_CONTROL_MAX_AGE, "600"),
-            ],
-        )
-            .into_response();
+        let Some(origin) = allowed_origin else {
+            return StatusCode::FORBIDDEN.into_response();
+        };
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        let headers = response.headers_mut();
+        headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_str(origin).unwrap_or_else(|_| HeaderValue::from_static("null")));
+        headers.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, OPTIONS"));
+        headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("authorization, content-type, dpop"));
+        headers.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
+        headers.insert(header::VARY, HeaderValue::from_static("Origin"));
+        return response;
     }
 
     let mut res = next.run(req).await;
@@ -175,11 +194,19 @@ async fn harden(req: Request, next: Next) -> Response {
         HeaderName::from_static("permissions-policy"),
         HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
     );
-    if is_api {
+    if st.cfg.hsts {
         headers.insert(
-            header::ACCESS_CONTROL_ALLOW_ORIGIN,
-            HeaderValue::from_static("*"),
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
         );
+    }
+    if is_api {
+        if let Some(origin) = allowed_origin {
+            if let Ok(value) = HeaderValue::from_str(origin) {
+                headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+                headers.insert(header::VARY, HeaderValue::from_static("Origin"));
+            }
+        }
     }
     res
 }
@@ -244,7 +271,7 @@ pub async fn run_local() -> anyhow::Result<()> {
         db.with(|c| db::seed_demo_client(c))?;
     }
     let ring = KeyRing::load(&db)?;
-    let state = AppState { cfg: cfg.clone(), db: db.clone(), keys: Arc::new(RwLock::new(ring)) };
+    let state = AppState { cfg: cfg.clone(), db: db.clone(), keys: Arc::new(RwLock::new(ring)), last_key_refresh: Arc::new(AtomicI64::new(util::now())) };
     let app = routes(state);
     let listener = TcpListener::bind(&cfg.bind).await?;
     println!("[kagi] issuer   {}", cfg.issuer);
