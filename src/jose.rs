@@ -1,7 +1,6 @@
 use crate::util::{b64, b64d, sha256};
 use anyhow::{anyhow, bail, Context};
 use serde_json::{json, Value};
-use sha2::Sha256;
 
 /// An ES256 signing key with its key id.
 #[derive(Clone)]
@@ -13,7 +12,7 @@ pub struct SigKey {
 impl SigKey {
     pub fn public_jwk(&self) -> Value {
         let vk = self.key.verifying_key();
-        let point = vk.to_encoded_point(false);
+        let point = vk.to_sec1_point(false);
         let x = point.x().expect("uncompressed point has x");
         let y = point.y().expect("uncompressed point has y");
         json!({
@@ -162,24 +161,14 @@ pub fn verify_signature(alg: &str, jwk: &Value, msg: &[u8], sig: &[u8]) -> anyho
         "RS256" | "PS256" => {
             let n = b64d(jwk.get("n").and_then(Value::as_str).ok_or_else(|| anyhow!("RSA JWK missing n"))?)?;
             let e = b64d(jwk.get("e").and_then(Value::as_str).ok_or_else(|| anyhow!("RSA JWK missing e"))?)?;
-            let key = rsa::RsaPublicKey::new(
-                rsa::BigUint::from_bytes_be(&n),
-                rsa::BigUint::from_bytes_be(&e),
-            )
-            .map_err(|_| anyhow!("invalid RSA public key"))?;
-            if alg == "RS256" {
-                let vk = rsa::pkcs1v15::VerifyingKey::<Sha256>::new(key);
-                let signature = rsa::pkcs1v15::Signature::try_from(sig)
-                    .map_err(|_| anyhow!("invalid RS256 signature encoding"))?;
-                rsa::signature::Verifier::verify(&vk, msg, &signature)
-                    .map_err(|_| anyhow!("RS256 signature verification failed"))?;
+            let key = ring::signature::RsaPublicKeyComponents { n: &n, e: &e };
+            let verification_algorithm = if alg == "RS256" {
+                &ring::signature::RSA_PKCS1_2048_8192_SHA256
             } else {
-                let vk = rsa::pss::VerifyingKey::<Sha256>::new(key);
-                let signature = rsa::pss::Signature::try_from(sig)
-                    .map_err(|_| anyhow!("invalid PS256 signature encoding"))?;
-                rsa::signature::Verifier::verify(&vk, msg, &signature)
-                    .map_err(|_| anyhow!("PS256 signature verification failed"))?;
-            }
+                &ring::signature::RSA_PSS_2048_8192_SHA256
+            };
+            key.verify(verification_algorithm, msg, sig)
+                .map_err(|_| anyhow!("{alg} signature verification failed"))?;
         }
         other => bail!("unsupported JWS alg {other}"),
     }
@@ -225,11 +214,10 @@ pub fn jwk_kid(jwk: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::OsRng;
 
     #[test]
     fn sign_and_verify_roundtrip() {
-        let sk = p256::ecdsa::SigningKey::random(&mut OsRng);
+        let sk = crate::util::random_p256_signing_key();
         let key = SigKey { kid: "k1".into(), key: sk };
         let token = key.sign(Some("JWT"), &json!({"sub": "alice"})).unwrap();
         let (h, c) = verify_with_jwk(&key.public_jwk(), &token, Some("JWT")).unwrap();
@@ -239,7 +227,7 @@ mod tests {
 
     #[test]
     fn tampered_token_is_rejected() {
-        let sk = p256::ecdsa::SigningKey::random(&mut OsRng);
+        let sk = crate::util::random_p256_signing_key();
         let key = SigKey { kid: "k1".into(), key: sk };
         let token = key.sign(None, &json!({"sub": "alice"})).unwrap();
         let mut parts: Vec<String> = token.split('.').map(String::from).collect();
@@ -250,7 +238,7 @@ mod tests {
 
     #[test]
     fn thumbprint_is_stable() {
-        let sk = p256::ecdsa::SigningKey::random(&mut OsRng);
+        let sk = crate::util::random_p256_signing_key();
         let key = SigKey { kid: "k1".into(), key: sk };
         let a = thumbprint(&key.public_jwk()).unwrap();
         let b = thumbprint(&key.public_jwk()).unwrap();

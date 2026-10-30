@@ -516,15 +516,10 @@ impl CoseKey {
                     .map_err(|_| anyhow!("Ed25519 signature verification failed"))?;
             }
             -257 => {
-                let key = rsa::RsaPublicKey::new(
-                    rsa::BigUint::from_bytes_be(self.n.as_ref().expect("validated")),
-                    rsa::BigUint::from_bytes_be(self.e.as_ref().expect("validated")),
-                )
-                .map_err(|_| anyhow!("invalid RSA public key"))?;
-                let vk = rsa::pkcs1v15::VerifyingKey::<sha2::Sha256>::new(key);
-                let signature = rsa::pkcs1v15::Signature::try_from(sig)
-                    .map_err(|_| anyhow!("invalid RSA signature encoding"))?;
-                rsa::signature::Verifier::verify(&vk, msg, &signature)
+                let n = self.n.as_ref().expect("validated");
+                let e = self.e.as_ref().expect("validated");
+                let key = ring::signature::RsaPublicKeyComponents { n, e };
+                key.verify(&ring::signature::RSA_PKCS1_2048_8192_SHA256, msg, sig)
                     .map_err(|_| anyhow!("RSA signature verification failed"))?;
             }
             _ => bail!("unsupported signature algorithm"),

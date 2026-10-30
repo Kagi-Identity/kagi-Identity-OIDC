@@ -2,7 +2,7 @@
 name = "kagi"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.87"
 description = "Kagi Identity — a passkey-first OpenID Connect provider (FAPI 2.0 profile)"
 license = "MIT"
 
@@ -16,13 +16,19 @@ postgres = "0.19"
 postgres-native-tls = "0.5"
 native-tls = "0.2"
 base64 = "0.22"
-sha2 = { version = "0.10", features = ["oid"] }
-p256 = { version = "0.13", features = ["ecdsa"] }
+sha2 = { version = "0.11", features = ["oid"] }
+p256 = { version = "0.14", features = ["ecdsa"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
-rand = "0.8"
+getrandom = "0.4"
 subtle = "2"
-rsa = "0.9"
+ring = "0.17.14"
 anyhow = "1"
+tower = "0.5"
+vercel_runtime = { version = "2.4", features = ["axum"] }
+
+[[bin]]
+name = "main"
+path = "api/index.rs"
 
 [profile.release]
 lto = "thin"

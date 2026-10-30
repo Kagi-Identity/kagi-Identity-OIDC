@@ -7,10 +7,16 @@ Run tests only against an isolated development database and local server. Some e
 Install the Rust toolchain version supported by `Cargo.toml`, then run:
 
 ```bash
-cargo check --locked --all-targets
-cargo test --locked --all-targets
-cargo clippy --locked --all-targets
-cargo build --locked --release
+cargo check --all-targets
+cargo test --all-targets
+cargo clippy --all-targets
+cargo build --release
+```
+
+Also run the Vercel deployment guardrail checks:
+
+```bash
+python3 scripts/check_vercel_security.py
 ```
 
 ## 2. Install Python test dependencies
@@ -28,7 +34,7 @@ python -m pip install -r requirements-test.txt
 Use a dedicated test database and enable the demo client. Keep this process running in one terminal:
 
 ```bash
-KAGI_SEED_DEMO=1 KAGI_ADMIN_TOKEN=test-admin KAGI_REGISTRATION_TOKEN=reg-secret KAGI_DB=kagi-e2e.db cargo run --locked
+KAGI_SEED_DEMO=1 KAGI_ADMIN_TOKEN=test-admin KAGI_REGISTRATION_TOKEN=reg-secret KAGI_DB=kagi-e2e.db cargo run
 ```
 
 In another terminal, use the same `KAGI_DB` value for tests that seed database records:
@@ -37,6 +43,7 @@ In another terminal, use the same `KAGI_DB` value for tests that seed database r
 KAGI_DB=kagi-e2e.db python scripts/e2e_oidc.py
 KAGI_DB=kagi-e2e.db python scripts/e2e_advanced.py
 KAGI_DB=kagi-e2e.db python scripts/e2e_security_races.py
+python scripts/e2e_rate_limit.py
 python scripts/e2e_webauthn.py
 python scripts/e2e_admin.py
 ```
@@ -54,6 +61,7 @@ On Windows, use PowerShell to set environment variables before invoking each com
 | `e2e_webauthn.py` | Passkey signup/sign-in using a software authenticator, challenge/origin/type validation, signature/counter checks |
 | `e2e_admin.py` | Dynamic registration gate, private_key_jwt, JAR, key rotation, logout redirect validation |
 | `e2e_security_races.py` | Concurrent authorization-code exchange, concurrent DPoP proof replay, key rotation/JWKS overlap, OIDC discovery sanity checks |
+| `e2e_rate_limit.py` | Shared fixed-window rate-limit enforcement and HTTP 429 behavior |
 
 The security-race script checks that exactly one concurrent authorization-code exchange succeeds and that a shared DPoP proof is accepted only once. It also checks a focused set of discovery metadata invariants. These are regression tests, not a complete normative test suite.
 

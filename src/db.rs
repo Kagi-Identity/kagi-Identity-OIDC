@@ -191,6 +191,14 @@ CREATE TABLE IF NOT EXISTS recovery_codes (
     used_at     INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_recovery_user ON recovery_codes(user_id);
+
+-- Shared, atomic rate-limit counters; safe across independently scaled instances.
+CREATE TABLE IF NOT EXISTS rate_limits (
+    bucket_key  TEXT NOT NULL,
+    window_start INTEGER NOT NULL,
+    hits        INTEGER NOT NULL,
+    PRIMARY KEY (bucket_key, window_start)
+);
 "#;
 
 // ---------------------------------------------------------------------------
@@ -799,9 +807,20 @@ impl Db {
     /// `postgresql://` selects PostgreSQL (e.g. Supabase); otherwise `path`
     /// is used as a SQLite file.
     pub fn open(database_url: Option<&str>, path: &str) -> anyhow::Result<Self> {
+        Self::open_with_options(database_url, path, true)
+    }
+
+    /// Open storage with an explicit migration policy. Serverless instances
+    /// should connect to an already-migrated database instead of racing DDL
+    /// during concurrent cold starts.
+    pub fn open_with_options(
+        database_url: Option<&str>,
+        path: &str,
+        auto_migrate: bool,
+    ) -> anyhow::Result<Self> {
         match database_url {
             Some(url) if url.starts_with("postgres://") || url.starts_with("postgresql://") => {
-                Self::open_postgres(url)
+                Self::open_postgres(url, auto_migrate)
             }
             Some(url) if !url.trim().is_empty() => {
                 anyhow::bail!(
@@ -829,19 +848,22 @@ impl Db {
         Ok(db)
     }
 
-    fn open_postgres(url: &str) -> anyhow::Result<Self> {
-        let config: postgres::Config = url.parse().context("parsing KAGI_DATABASE_URL")?;
-        // Supabase requires TLS. With SslMode::Prefer (the default) a local
-        // server without TLS still works, while Supabase negotiates TLS.
+    fn open_postgres(url: &str, auto_migrate: bool) -> anyhow::Result<Self> {
+        let mut config: postgres::Config = url.parse().context("parsing KAGI_DATABASE_URL")?;
+        // Identity data and signing keys must never travel over plaintext TCP.
+        // Require TLS even if the supplied URL omitted sslmode=require.
+        config.ssl_mode(postgres::config::SslMode::Require);
         let tls = native_tls::TlsConnector::builder()
             .build()
             .context("building TLS connector")?;
         let mut client = config
             .connect(postgres_native_tls::MakeTlsConnector::new(tls))
             .context("connecting to postgres (check KAGI_DATABASE_URL and sslmode)")?;
-        client
-            .batch_execute(POSTGRES_SCHEMA)
-            .context("applying supabase/schema.sql")?;
+        if auto_migrate {
+            client
+                .batch_execute(POSTGRES_SCHEMA)
+                .context("applying supabase/schema.sql")?;
+        }
         Ok(Self {
             conn: Mutex::new(Connection::Postgres(RefCell::new(client))),
             backend: "postgres",
@@ -908,6 +930,7 @@ impl Db {
             c.execute("DELETE FROM auth_codes WHERE expires_at < ?1", params![now - 3600])?;
             c.execute("DELETE FROM dpop_replay WHERE expires_at < ?1", params![now])?;
             c.execute("DELETE FROM assertion_replay WHERE expires_at < ?1", params![now])?;
+            c.execute("DELETE FROM rate_limits WHERE window_start < ?1", params![now - 3600])?;
             c.execute("DELETE FROM sessions WHERE expires_at < ?1", params![now])?;
             c.execute(
                 "DELETE FROM refresh_tokens WHERE expires_at < ?1 AND revoked = 1",

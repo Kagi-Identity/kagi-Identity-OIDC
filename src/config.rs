@@ -16,19 +16,23 @@ pub struct Config {
     /// PostgreSQL / Supabase connection string. When set, it takes precedence
     /// over `db_path` (SQLite).
     pub database_url: Option<String>,
+    /// Apply schema migrations at process startup (disable for serverless production).
+    pub auto_migrate: bool,
     pub allow_signup: bool,
     pub seed_demo: bool,
     pub require_par: bool,
     pub require_dpop: bool,
     pub admin_token: Option<String>,
     pub registration_token: Option<String>,
+    /// Explicit browser origins allowed to call API endpoints.
+    pub cors_origins: Vec<String>,
     pub cookie_secure: bool,
     /// Send `Strict-Transport-Security` (only makes sense on HTTPS).
     pub hsts: bool,
     /// Trust the first `X-Forwarded-For` hop. Enable only behind a proxy that
     /// overwrites the header.
     pub trust_proxy: bool,
-    /// Enable the in-process rate limiter.
+    /// Enable the shared PostgreSQL-backed rate limiter.
     pub rate_limit: bool,
     /// Enable single-use recovery codes as a passkey fallback.
     pub recovery_enabled: bool,
@@ -120,6 +124,24 @@ impl Config {
         let refresh_ttl = num("KAGI_REFRESH_TTL", 30 * 24 * 3600);
         let id_ttl = num("KAGI_ID_TTL", 300);
         let par_ttl = num("KAGI_PAR_TTL", 90);
+        let cors_origins: Vec<String> = non_empty("KAGI_CORS_ORIGINS")
+            .map(|raw| raw.split(',').map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).collect())
+            .unwrap_or_default();
+        for origin in &cors_origins {
+            let host = origin.strip_prefix("https://").unwrap_or("");
+            anyhow::ensure!(
+                !host.is_empty()
+                    && !host.contains('/')
+                    && !host.contains('@')
+                    && !host.contains(' ')
+                    && !origin.contains('*'),
+                "KAGI_CORS_ORIGINS must contain exact HTTPS origins without paths, credentials, or wildcards"
+            );
+            anyhow::ensure!(
+                !origin.contains('?') && !origin.contains('#'),
+                "KAGI_CORS_ORIGINS entries must not contain query strings or fragments"
+            );
+        }
 
         for (name, value) in [
             ("KAGI_SESSION_TTL", session_ttl),
@@ -141,12 +163,14 @@ impl Config {
             rp_name: non_empty("KAGI_RP_NAME").unwrap_or_else(|| "Kagi Identity".to_string()),
             db_path: non_empty("KAGI_DB").unwrap_or_else(|| "kagi.db".to_string()),
             database_url: non_empty("KAGI_DATABASE_URL").or_else(|| non_empty("DATABASE_URL")),
+            auto_migrate: flag("KAGI_AUTO_MIGRATE", true),
             allow_signup: flag("KAGI_ALLOW_SIGNUP", true),
             seed_demo: flag("KAGI_SEED_DEMO", false),
             require_par: flag("KAGI_REQUIRE_PAR", false),
             require_dpop: flag("KAGI_REQUIRE_DPOP", false),
             admin_token: non_empty("KAGI_ADMIN_TOKEN"),
             registration_token: non_empty("KAGI_REGISTRATION_TOKEN"),
+            cors_origins,
             cookie_secure: flag("KAGI_COOKIE_SECURE", secure_default),
             hsts: flag("KAGI_HSTS", secure_default),
             trust_proxy: flag("KAGI_TRUST_PROXY", false),

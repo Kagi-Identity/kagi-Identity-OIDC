@@ -13,6 +13,7 @@ All values are read when the process starts. Restart Kagi Identity after changin
 | `KAGI_ORIGIN` | Same as issuer | Expected browser origin for WebAuthn validation |
 | `KAGI_DB` | `kagi.db` | SQLite database path |
 | `KAGI_DATABASE_URL` | Unset | PostgreSQL/Supabase connection string; takes precedence over `KAGI_DB` |
+| `KAGI_AUTO_MIGRATE` | `1` | Apply schema on startup; set `0` in serverless production after running schema migration once |
 | `DATABASE_URL` | Unset | Fallback PostgreSQL connection string if `KAGI_DATABASE_URL` is unset |
 
 ## Feature and policy settings
@@ -25,10 +26,11 @@ All values are read when the process starts. Restart Kagi Identity after changin
 | `KAGI_REQUIRE_DPOP` | `0` | Require DPoP for applicable flows |
 | `KAGI_ADMIN_TOKEN` | Unset | Bearer token protecting administrative key rotation; unset disables endpoint |
 | `KAGI_REGISTRATION_TOKEN` | Unset | Initial access token required for dynamic client registration |
+| `KAGI_CORS_ORIGINS` | Unset | Comma-separated exact HTTPS origins allowed to call API endpoints |
 | `KAGI_COOKIE_SECURE` | Derived from HTTPS issuer | Add the Secure attribute to cookies |
 | `KAGI_HSTS` | Derived from HTTPS issuer | Emit HSTS; enable only when HTTPS is correctly deployed |
 | `KAGI_TRUST_PROXY` | `0` | Trust the first forwarded IP hop; only behind a proxy that overwrites the header |
-| `KAGI_RATE_LIMIT` | `1` | Enable process-local rate limiting |
+| `KAGI_RATE_LIMIT` | `1` | Enable atomic PostgreSQL-backed shared rate limiting |
 | `KAGI_RECOVERY_ENABLED` | `1` | Enable single-use recovery codes as passkey fallback |
 | `KAGI_MAX_PASSKEYS` | `10` | Maximum passkeys per account (clamped to 1–100) |
 | `KAGI_AUDIT_RETENTION_DAYS` | `90` | Audit event retention in days; `0` retains indefinitely |
@@ -64,8 +66,11 @@ KAGI_ALLOW_SIGNUP=0
 KAGI_REQUIRE_PAR=1
 KAGI_REQUIRE_DPOP=1
 KAGI_RATE_LIMIT=1
+KAGI_TRUST_PROXY=1
+KAGI_AUTO_MIGRATE=0
+KAGI_CORS_ORIGINS=https://your-rp.example.com
 KAGI_ADMIN_TOKEN=retrieve-from-secret-manager
 KAGI_REGISTRATION_TOKEN=retrieve-from-secret-manager
 ```
 
-A stricter flag is not a substitute for conformance testing. Multi-instance deployments need shared atomic session/replay/rate-limit state; a PostgreSQL connection alone does not supply that coordination.
+For Vercel, apply `supabase/schema.sql` once before deployment, then set `KAGI_AUTO_MIGRATE=0` to avoid concurrent schema DDL during cold starts. A stricter flag is not a substitute for conformance testing. Vercel startup intentionally fails closed if required production settings are missing.

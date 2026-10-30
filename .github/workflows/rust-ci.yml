@@ -2,7 +2,7 @@ name: Rust CI
 
 on:
   push:
-    branches: ["main", "fix/**"]
+    branches: ["main", "fix/**", "feat/**"]
   pull_request:
     branches: ["main"]
 
@@ -31,16 +31,43 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Compile
-        run: cargo check --locked --all-targets
+        run: cargo check --all-targets
 
       - name: Run tests
-        run: cargo test --locked --all-targets
+        run: cargo test --all-targets
 
       - name: Run Clippy
-        run: cargo clippy --locked --all-targets
+        run: cargo clippy --all-targets
 
       - name: Release build
-        run: cargo build --locked --release
+        run: cargo build --release
+
+      - name: Upload resolved Cargo lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolved-cargo-lockfile
+          path: Cargo.lock
+          if-no-files-found: error
+
+  dependency-audit:
+    name: Rust dependency vulnerability audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve Cargo lockfile for audit
+        run: cargo generate-lockfile
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        run: cargo audit --deny warnings
 
   oauth-security-integration:
     name: OAuth/OIDC security regression tests
@@ -66,7 +93,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check requests cryptography
 
       - name: Build release server
-        run: cargo build --locked --release
+        run: cargo build --release
 
       - name: Start isolated test server
         env:
@@ -98,6 +125,11 @@ jobs:
           KAGI_ADMIN_TOKEN: test-admin
         run: python scripts/e2e_security_races.py
 
+      - name: Verify shared rate limiting
+        env:
+          KAGI_BASE: http://localhost:8080
+        run: python scripts/e2e_rate_limit.py
+
       - name: Show server logs on failure
         if: failure()
         run: cat /tmp/kagi-security-test.log
@@ -108,6 +140,17 @@ jobs:
           if [ -f /tmp/kagi-security-test.pid ]; then
             kill "$(cat /tmp/kagi-security-test.pid)" 2>/dev/null || true
           fi
+
+  vercel-security-smoke:
+    name: Vercel production security guardrails
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Vercel runtime and security configuration
+        run: python3 scripts/check_vercel_security.py
 
   documentation-site-smoke:
     name: Documentation site structure and links
