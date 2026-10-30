@@ -19,7 +19,7 @@ base64 = "0.22"
 sha2 = { version = "0.11", features = ["oid"] }
 p256 = { version = "0.14", features = ["ecdsa"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
-rand = "0.10"
+getrandom = "0.4"
 subtle = "2"
 ring = "0.17.14"
 anyhow = "1"
