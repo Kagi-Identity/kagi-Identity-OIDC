@@ -11,7 +11,7 @@ mod ui;
 mod util;
 mod webauthn;
 
-use axum::extract::{Request, State};
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{header, HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -120,6 +120,7 @@ fn routes_and_security(state: AppState) -> Router {
         .route("/static/style.css", get(style_css))
         .fallback(not_found)
         .with_state(state.clone())
+        .layer(DefaultBodyLimit::max(128 * 1024))
         .layer(middleware::from_fn_with_state(state, harden))
 }
 
@@ -158,7 +159,9 @@ async fn harden(State(st): State<AppState>, req: Request, next: Next) -> Respons
             "/api/webauthn/login/options" | "/api/webauthn/login/verify" => Some(("webauthn-login", 12)),
             "/api/webauthn/signup/options" | "/api/webauthn/signup/verify" => Some(("webauthn-signup", 8)),
             "/api/webauthn/passkey/options" | "/api/webauthn/passkey/verify" => Some(("webauthn-passkey", 12)),
+            "/authorize" => Some(("oauth-authorize", 30)),
             "/token" => Some(("oauth-token", 60)),
+            "/userinfo" | "/introspect" | "/revoke" => Some(("oauth-resource", 60)),
             "/par" => Some(("oauth-par", 30)),
             "/register" => Some(("client-registration", 5)),
             "/admin/keys/rotate" => Some(("key-rotation", 3)),
@@ -204,6 +207,9 @@ async fn harden(State(st): State<AppState>, req: Request, next: Next) -> Respons
         st.cfg.cors_origins.iter().any(|allowed| allowed == *origin)
             || (st.cfg.is_local() && st.cfg.cors_origins.is_empty())
     });
+    if is_api && origin.is_some() && allowed_origin.is_none() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     let preflight = req.method() == Method::OPTIONS && is_api;
 
     if preflight {
