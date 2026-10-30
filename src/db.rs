@@ -838,9 +838,10 @@ impl Db {
     }
 
     fn open_postgres(url: &str) -> anyhow::Result<Self> {
-        let config: postgres::Config = url.parse().context("parsing KAGI_DATABASE_URL")?;
-        // Supabase requires TLS. With SslMode::Prefer (the default) a local
-        // server without TLS still works, while Supabase negotiates TLS.
+        let mut config: postgres::Config = url.parse().context("parsing KAGI_DATABASE_URL")?;
+        // Identity data and signing keys must never travel over plaintext TCP.
+        // Require TLS even if the supplied URL omitted sslmode=require.
+        config.ssl_mode(postgres::config::SslMode::Require);
         let tls = native_tls::TlsConnector::builder()
             .build()
             .context("building TLS connector")?;
