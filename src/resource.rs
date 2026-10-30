@@ -561,6 +561,19 @@ pub async fn rotate_keys(State(st): State<AppState>, headers: HeaderMap) -> Resp
 // Health
 // ---------------------------------------------------------------------------
 
-pub async fn health() -> Response {
-    Json(json!({ "status": "ok" })).into_response()
+pub async fn health(State(st): State<AppState>) -> Response {
+    let ready = st.db.with(|conn| {
+        let _: i64 = conn.query_row("SELECT 1", params![], |row| row.get(0))?;
+        Ok(())
+    }).is_ok();
+
+    if ready {
+        Json(json!({ "status": "ok", "ready": true })).into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
+            "status": "unavailable",
+            "ready": false,
+            "error": "database unavailable"
+        }))).into_response()
+    }
 }
