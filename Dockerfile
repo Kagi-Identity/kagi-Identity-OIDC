@@ -6,9 +6,10 @@ WORKDIR /src
 # Copy manifests first so dependency compilation can be cached.
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY api ./api
 COPY static ./static
 COPY supabase ./supabase
-RUN cargo build --locked --release
+RUN cargo build --release
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
