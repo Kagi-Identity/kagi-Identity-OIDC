@@ -19,6 +19,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use config::Config;
 use db::Db;
+use db::params;
 use keys::KeyRing;
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -47,6 +48,7 @@ pub fn build_state() -> anyhow::Result<AppState> {
         anyhow::ensure!(cfg.hsts, "KAGI_HSTS=1 is required on Vercel");
         anyhow::ensure!(!cfg.seed_demo, "KAGI_SEED_DEMO must be disabled on Vercel");
         anyhow::ensure!(cfg.require_par, "KAGI_REQUIRE_PAR=1 is required on Vercel");
+        anyhow::ensure!(cfg.trust_proxy, "KAGI_TRUST_PROXY=1 is required behind the Vercel proxy");
         anyhow::ensure!(!cfg.cors_origins.is_empty(), "KAGI_CORS_ORIGINS must list exact HTTPS RP origins on Vercel");
         anyhow::ensure!(
             cfg.admin_token.as_ref().is_some_and(|v| v.len() >= 32),
@@ -143,6 +145,52 @@ async fn harden(State(st): State<AppState>, req: Request, next: Next) -> Respons
         match KeyRing::load(&st.db) {
             Ok(ring) => *st.keys.write().unwrap_or_else(|e| e.into_inner()) = ring,
             Err(error) => eprintln!("[kagi] signing-key refresh failed: {error}"),
+        }
+    }
+
+    let path = req.uri().path();
+    if st.cfg.rate_limit {
+        let policy: Option<(&str, i64)> = match path {
+            "/api/webauthn/login/options" | "/api/webauthn/login/verify" => Some(("webauthn-login", 12)),
+            "/api/webauthn/signup/options" | "/api/webauthn/signup/verify" => Some(("webauthn-signup", 8)),
+            "/api/webauthn/passkey/options" | "/api/webauthn/passkey/verify" => Some(("webauthn-passkey", 12)),
+            "/token" => Some(("oauth-token", 60)),
+            "/par" => Some(("oauth-par", 30)),
+            "/register" => Some(("client-registration", 5)),
+            "/admin/keys/rotate" => Some(("key-rotation", 3)),
+            "/login" | "/signup" => Some(("auth-page", 60)),
+            _ => None,
+        };
+        if let Some((bucket, limit)) = policy {
+            let forwarded = req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok())
+                .and_then(|v| v.split(',').next()).map(str::trim).filter(|v| !v.is_empty());
+            let client_ip = if st.cfg.trust_proxy { forwarded.unwrap_or("unknown-proxy-client") } else { "local-development" };
+            let key = format!("{}:{}", bucket, util::sha256_hex(client_ip));
+            let window_start = now.div_euclid(60) * 60;
+            let counter = st.db.with(|conn| {
+                conn.execute(
+                    "INSERT INTO rate_limits (bucket_key, window_start, hits) VALUES (?1, ?2, 1) ON CONFLICT (bucket_key, window_start) DO UPDATE SET hits = rate_limits.hits + 1",
+                    params![key, window_start],
+                )?;
+                conn.query_row(
+                    "SELECT hits FROM rate_limits WHERE bucket_key = ?1 AND window_start = ?2",
+                    params![key, window_start],
+                    |row| row.get::<_, i64>(0),
+                )
+            });
+            match counter {
+                Ok(hits) if hits <= limit => {}
+                Ok(_) => {
+                    let retry = 60 - now.rem_euclid(60);
+                    let mut response = (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
+                    response.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_str(&retry.to_string()).unwrap_or_else(|_| HeaderValue::from_static("60")));
+                    return response;
+                }
+                Err(error) => {
+                    eprintln!("[kagi] shared rate-limit store unavailable: {error}");
+                    return (StatusCode::SERVICE_UNAVAILABLE, "temporarily unavailable").into_response();
+                }
+            }
         }
     }
 
