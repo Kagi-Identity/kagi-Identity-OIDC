@@ -191,6 +191,14 @@ CREATE TABLE IF NOT EXISTS recovery_codes (
     used_at     INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_recovery_user ON recovery_codes(user_id);
+
+-- Shared, atomic rate-limit counters; safe across independently scaled instances.
+CREATE TABLE IF NOT EXISTS rate_limits (
+    bucket_key  TEXT NOT NULL,
+    window_start INTEGER NOT NULL,
+    hits        INTEGER NOT NULL,
+    PRIMARY KEY (bucket_key, window_start)
+);
 "#;
 
 // ---------------------------------------------------------------------------
