@@ -3,7 +3,7 @@ use crate::jose::SigKey;
 use crate::util::now;
 use crate::db::params;
 use anyhow::Context;
-use rand::rngs::OsRng;
+use rand::rngs::SysRng;
 use serde_json::{json, Value};
 
 /// In-memory view of the signing keys. The current key signs, older keys stay
@@ -16,7 +16,7 @@ pub struct KeyRing {
 const MAX_KEYS: i64 = 3;
 
 fn new_signing_key() -> SigKey {
-    let key = p256::ecdsa::SigningKey::random(&mut OsRng);
+    let key = p256::ecdsa::SigningKey::random(&mut SysRng);
     let kid = crate::util::random_token(9);
     SigKey { kid, key }
 }
