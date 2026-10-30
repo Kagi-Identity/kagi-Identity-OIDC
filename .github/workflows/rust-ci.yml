@@ -30,17 +30,40 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
       - name: Compile
-        run: cargo check --locked --all-targets
+        run: cargo check --all-targets
 
       - name: Run tests
-        run: cargo test --locked --all-targets
+        run: cargo test --all-targets
 
       - name: Run Clippy
-        run: cargo clippy --locked --all-targets
+        run: cargo clippy --all-targets
 
       - name: Release build
-        run: cargo build --locked --release
+        run: cargo build --release
+
+  dependency-audit:
+    name: Rust dependency vulnerability audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve Cargo lockfile for audit
+        run: cargo generate-lockfile
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        run: cargo audit --deny warnings
 
   oauth-security-integration:
     name: OAuth/OIDC security regression tests
@@ -66,7 +89,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check requests cryptography
 
       - name: Build release server
-        run: cargo build --locked --release
+        run: cargo build --release
 
       - name: Start isolated test server
         env:
