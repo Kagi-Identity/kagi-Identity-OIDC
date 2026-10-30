@@ -17,7 +17,6 @@ pub fn random_bytes(n: usize) -> Vec<u8> {
     buf
 }
 
-/// URL-safe, unpadded base64 of `n` random bytes.
 /// Generate a valid P-256 signing key from the operating-system CSPRNG.
 /// Invalid scalars are discarded and sampled again.
 pub fn random_p256_signing_key() -> p256::ecdsa::SigningKey {
@@ -29,6 +28,7 @@ pub fn random_p256_signing_key() -> p256::ecdsa::SigningKey {
     }
 }
 
+/// URL-safe, unpadded base64 of `n` random bytes.
 pub fn random_token(n: usize) -> String {
     b64(&random_bytes(n))
 }
