@@ -22,6 +22,8 @@ pub struct Config {
     pub require_dpop: bool,
     pub admin_token: Option<String>,
     pub registration_token: Option<String>,
+    /// Explicit browser origins allowed to call API endpoints.
+    pub cors_origins: Vec<String>,
     pub cookie_secure: bool,
     /// Send `Strict-Transport-Security` (only makes sense on HTTPS).
     pub hsts: bool,
@@ -120,6 +122,15 @@ impl Config {
         let refresh_ttl = num("KAGI_REFRESH_TTL", 30 * 24 * 3600);
         let id_ttl = num("KAGI_ID_TTL", 300);
         let par_ttl = num("KAGI_PAR_TTL", 90);
+        let cors_origins = non_empty("KAGI_CORS_ORIGINS")
+            .map(|raw| raw.split(',').map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).collect())
+            .unwrap_or_default();
+        for origin in &cors_origins {
+            anyhow::ensure!(origin.starts_with("https://") && !origin.contains('*') && !origin.ends_with('/'),
+                "KAGI_CORS_ORIGINS must contain exact HTTPS origins without paths or wildcards");
+            anyhow::ensure!(!origin.contains('?') && !origin.contains('#'),
+                "KAGI_CORS_ORIGINS entries must not contain query strings or fragments");
+        }
 
         for (name, value) in [
             ("KAGI_SESSION_TTL", session_ttl),
@@ -147,6 +158,7 @@ impl Config {
             require_dpop: flag("KAGI_REQUIRE_DPOP", false),
             admin_token: non_empty("KAGI_ADMIN_TOKEN"),
             registration_token: non_empty("KAGI_REGISTRATION_TOKEN"),
+            cors_origins,
             cookie_secure: flag("KAGI_COOKIE_SECURE", secure_default),
             hsts: flag("KAGI_HSTS", secure_default),
             trust_proxy: flag("KAGI_TRUST_PROXY", false),
