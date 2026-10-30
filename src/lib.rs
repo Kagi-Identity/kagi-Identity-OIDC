@@ -49,6 +49,8 @@ pub fn build_state() -> anyhow::Result<AppState> {
         anyhow::ensure!(!cfg.seed_demo, "KAGI_SEED_DEMO must be disabled on Vercel");
         anyhow::ensure!(cfg.require_par, "KAGI_REQUIRE_PAR=1 is required on Vercel");
         anyhow::ensure!(cfg.trust_proxy, "KAGI_TRUST_PROXY=1 is required behind the Vercel proxy");
+        anyhow::ensure!(!cfg.auto_migrate, "KAGI_AUTO_MIGRATE=0 is required; apply database schema before deployment");
+        anyhow::ensure!(cfg.rate_limit, "KAGI_RATE_LIMIT=1 is required in production");
         anyhow::ensure!(!cfg.cors_origins.is_empty(), "KAGI_CORS_ORIGINS must list exact HTTPS RP origins on Vercel");
         anyhow::ensure!(
             cfg.admin_token.as_ref().is_some_and(|v| v.len() >= 32),
@@ -60,7 +62,7 @@ pub fn build_state() -> anyhow::Result<AppState> {
         );
     }
 
-    let db = Arc::new(Db::open(cfg.database_url.as_deref(), &cfg.db_path)?);
+    let db = Arc::new(Db::open_with_options(cfg.database_url.as_deref(), &cfg.db_path, cfg.auto_migrate)?);
     if cfg.seed_demo {
         anyhow::ensure!(cfg.is_local(), "demo client seeding is only allowed for localhost");
         db.with(|c| db::seed_demo_client(c))?;
