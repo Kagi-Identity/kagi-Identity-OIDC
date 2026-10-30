@@ -40,7 +40,7 @@ cp .env.example .env
 set -a
 . ./.env
 set +a
-cargo run --locked
+cargo run
 ```
 
 Open [http://localhost:8080](http://localhost:8080). The `.env` file is local configuration; do not commit secrets. On Windows, set environment variables in PowerShell or use WSL rather than sourcing the POSIX file.
@@ -111,19 +111,19 @@ See the full [configuration reference](docs/CONFIGURATION.md). Keep the issuer, 
 ## Run tests
 
 ```bash
-cargo check --locked --all-targets
-cargo test --locked --all-targets
-cargo clippy --locked --all-targets
-cargo build --locked --release
+cargo check --all-targets
+cargo test --all-targets
+cargo clippy --all-targets
+cargo build --release
 ```
 
 For Python end-to-end and security regression tests, install `requirements-test.txt` and follow the isolated test setup in [Testing](docs/TESTING.md). Tests may seed records directly into their database: never point them at production data.
 
 ## Architecture and operational boundaries
 
-- SQLite is convenient for local development. PostgreSQL changes the persistence backend, but does **not** make in-process session, replay, or rate-limit state shared between multiple instances.
+- SQLite is convenient for local development. Vercel production requires PostgreSQL; shared records and rate-limit counters are stored there, while each warm function instance maintains a short-lived in-memory signing-key cache.
 - Signing keys are persisted in the database in this implementation; database backups therefore contain sensitive key material. Encrypt and restrict backups.
-- The built-in rate limiter is process-local. Production deployments need edge protections and, for multi-instance operation, coordinated shared state for one-time artifacts and replay detection.
+- Production deployments use PostgreSQL-backed shared rate-limit counters and persisted OAuth/WebAuthn artifacts. Signing-key caches refresh across instances; use a managed pooler and load-test the deployment.
 - Run behind HTTPS in production. Keep administrative endpoints private, limit request size and rate, and prevent secrets or tokens from entering logs.
 
 For a deployment checklist, see [Deployment](docs/DEPLOYMENT.md). For security reports, follow [SECURITY.md](SECURITY.md).
