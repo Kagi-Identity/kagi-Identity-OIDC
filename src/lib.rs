@@ -176,11 +176,11 @@ async fn harden(State(st): State<AppState>, req: Request, next: Next) -> Respons
                     "INSERT INTO rate_limits (bucket_key, window_start, hits) VALUES (?1, ?2, 1) ON CONFLICT (bucket_key, window_start) DO UPDATE SET hits = rate_limits.hits + 1",
                     params![key, window_start],
                 )?;
-                conn.query_row(
+                Ok(conn.query_row(
                     "SELECT hits FROM rate_limits WHERE bucket_key = ?1 AND window_start = ?2",
                     params![key, window_start],
                     |row| row.get::<_, i64>(0),
-                )
+                )?)
             });
             match counter {
                 Ok(hits) if hits <= limit => {}
