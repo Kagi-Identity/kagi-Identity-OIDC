@@ -7,10 +7,16 @@ Run tests only against an isolated development database and local server. Some e
 Install the Rust toolchain version supported by `Cargo.toml`, then run:
 
 ```bash
-cargo check --locked --all-targets
-cargo test --locked --all-targets
-cargo clippy --locked --all-targets
-cargo build --locked --release
+cargo check --all-targets
+cargo test --all-targets
+cargo clippy --all-targets
+cargo build --release
+```
+
+Also run the Vercel deployment guardrail checks:
+
+```bash
+python3 scripts/check_vercel_security.py
 ```
 
 ## 2. Install Python test dependencies
@@ -28,7 +34,7 @@ python -m pip install -r requirements-test.txt
 Use a dedicated test database and enable the demo client. Keep this process running in one terminal:
 
 ```bash
-KAGI_SEED_DEMO=1 KAGI_ADMIN_TOKEN=test-admin KAGI_REGISTRATION_TOKEN=reg-secret KAGI_DB=kagi-e2e.db cargo run --locked
+KAGI_SEED_DEMO=1 KAGI_ADMIN_TOKEN=test-admin KAGI_REGISTRATION_TOKEN=reg-secret KAGI_DB=kagi-e2e.db cargo run
 ```
 
 In another terminal, use the same `KAGI_DB` value for tests that seed database records:
