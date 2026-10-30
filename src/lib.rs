@@ -21,7 +21,6 @@ use config::Config;
 use db::Db;
 use keys::KeyRing;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
 use tokio::net::TcpListener;
 
 #[derive(Clone)]
