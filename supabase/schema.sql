@@ -181,3 +181,11 @@ CREATE TABLE IF NOT EXISTS recovery_codes (
     used_at     BIGINT
 );
 CREATE INDEX IF NOT EXISTS idx_recovery_user ON recovery_codes(user_id);
+
+-- Shared, atomic rate-limit counters for serverless/multi-instance deployments.
+CREATE TABLE IF NOT EXISTS rate_limits (
+    bucket_key TEXT NOT NULL,
+    window_start BIGINT NOT NULL,
+    hits BIGINT NOT NULL,
+    PRIMARY KEY (bucket_key, window_start)
+);
