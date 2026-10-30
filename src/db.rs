@@ -930,6 +930,7 @@ impl Db {
             c.execute("DELETE FROM auth_codes WHERE expires_at < ?1", params![now - 3600])?;
             c.execute("DELETE FROM dpop_replay WHERE expires_at < ?1", params![now])?;
             c.execute("DELETE FROM assertion_replay WHERE expires_at < ?1", params![now])?;
+            c.execute("DELETE FROM rate_limits WHERE window_start < ?1", params![now - 3600])?;
             c.execute("DELETE FROM sessions WHERE expires_at < ?1", params![now])?;
             c.execute(
                 "DELETE FROM refresh_tokens WHERE expires_at < ?1 AND revoked = 1",
