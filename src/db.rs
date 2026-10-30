@@ -807,9 +807,20 @@ impl Db {
     /// `postgresql://` selects PostgreSQL (e.g. Supabase); otherwise `path`
     /// is used as a SQLite file.
     pub fn open(database_url: Option<&str>, path: &str) -> anyhow::Result<Self> {
+        Self::open_with_options(database_url, path, true)
+    }
+
+    /// Open storage with an explicit migration policy. Serverless instances
+    /// should connect to an already-migrated database instead of racing DDL
+    /// during concurrent cold starts.
+    pub fn open_with_options(
+        database_url: Option<&str>,
+        path: &str,
+        auto_migrate: bool,
+    ) -> anyhow::Result<Self> {
         match database_url {
             Some(url) if url.starts_with("postgres://") || url.starts_with("postgresql://") => {
-                Self::open_postgres(url)
+                Self::open_postgres(url, auto_migrate)
             }
             Some(url) if !url.trim().is_empty() => {
                 anyhow::bail!(
@@ -837,7 +848,7 @@ impl Db {
         Ok(db)
     }
 
-    fn open_postgres(url: &str) -> anyhow::Result<Self> {
+    fn open_postgres(url: &str, auto_migrate: bool) -> anyhow::Result<Self> {
         let mut config: postgres::Config = url.parse().context("parsing KAGI_DATABASE_URL")?;
         // Identity data and signing keys must never travel over plaintext TCP.
         // Require TLS even if the supplied URL omitted sslmode=require.
@@ -848,9 +859,11 @@ impl Db {
         let mut client = config
             .connect(postgres_native_tls::MakeTlsConnector::new(tls))
             .context("connecting to postgres (check KAGI_DATABASE_URL and sslmode)")?;
-        client
-            .batch_execute(POSTGRES_SCHEMA)
-            .context("applying supabase/schema.sql")?;
+        if auto_migrate {
+            client
+                .batch_execute(POSTGRES_SCHEMA)
+                .context("applying supabase/schema.sql")?;
+        }
         Ok(Self {
             conn: Mutex::new(Connection::Postgres(RefCell::new(client))),
             backend: "postgres",
