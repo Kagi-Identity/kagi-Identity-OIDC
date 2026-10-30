@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""Static guardrails for the Vercel/serverless production entrypoint."""
+from pathlib import Path
+import sys
+
+def require(path: str, needles: tuple[str, ...]) -> None:
+    content = Path(path).read_text(encoding="utf-8")
+    missing = [needle for needle in needles if needle not in content]
+    if missing:
+        raise SystemExit(f"{path}: missing required guardrails: {', '.join(missing)}")
+
+def main() -> int:
+    require("api/index.rs", ("VercelLayer::new()", "kagi::build_state()", "OnceLock"))
+    require("vercel.json", ('"destination": "/api/index"',))
+    require("src/lib.rs", (
+        "KAGI_DATABASE_URL",
+        "KAGI_AUTO_MIGRATE=0",
+        "KAGI_CORS_ORIGINS",
+        "KAGI_REGISTRATION_TOKEN",
+        "KAGI_TRUST_PROXY=1",
+        "rate_limits",
+        "compare_exchange",
+        "STRICT_TRANSPORT_SECURITY",
+    ))
+    require("src/db.rs", (
+        "open_with_options",
+        "SslMode::Require",
+        "CREATE TABLE IF NOT EXISTS rate_limits",
+    ))
+    require("src/config.rs", ("KAGI_CORS_ORIGINS", "cors_origins"))
+    require("supabase/schema.sql", ("CREATE TABLE IF NOT EXISTS rate_limits",))
+    print("Vercel security guardrails present: serverless adapter, persistent DB gate, explicit CORS, TLS, shared rate limiting, and key refresh.")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
