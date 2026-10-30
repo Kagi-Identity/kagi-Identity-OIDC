@@ -305,13 +305,6 @@ async fn not_found() -> Response {
         .into_response()
 }
 
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
-    println!("\n[kagi] shutting down");
-}
-
-}
-
 pub async fn run_local() -> anyhow::Result<()> {
     let cfg = Arc::new(Config::from_env()?);
     let db = Arc::new(Db::open(cfg.database_url.as_deref(), &cfg.db_path)?);
