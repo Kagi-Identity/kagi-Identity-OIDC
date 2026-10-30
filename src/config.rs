@@ -124,7 +124,7 @@ impl Config {
         let refresh_ttl = num("KAGI_REFRESH_TTL", 30 * 24 * 3600);
         let id_ttl = num("KAGI_ID_TTL", 300);
         let par_ttl = num("KAGI_PAR_TTL", 90);
-        let cors_origins = non_empty("KAGI_CORS_ORIGINS")
+        let cors_origins: Vec<String> = non_empty("KAGI_CORS_ORIGINS")
             .map(|raw| raw.split(',').map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).collect())
             .unwrap_or_default();
         for origin in &cors_origins {
