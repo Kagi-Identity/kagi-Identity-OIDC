@@ -2,7 +2,7 @@ name: Rust CI
 
 on:
   push:
-    branches: ["main", "fix/**"]
+    branches: ["main", "fix/**", "feat/**"]
   pull_request:
     branches: ["main"]
 
@@ -41,6 +41,13 @@ jobs:
 
       - name: Release build
         run: cargo build --release
+
+      - name: Upload resolved Cargo lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolved-cargo-lockfile
+          path: Cargo.lock
+          if-no-files-found: error
 
   dependency-audit:
     name: Rust dependency vulnerability audit
