@@ -118,6 +118,11 @@ jobs:
           KAGI_ADMIN_TOKEN: test-admin
         run: python scripts/e2e_security_races.py
 
+      - name: Verify shared rate limiting
+        env:
+          KAGI_BASE: http://localhost:8080
+        run: python scripts/e2e_rate_limit.py
+
       - name: Show server logs on failure
         if: failure()
         run: cat /tmp/kagi-security-test.log
