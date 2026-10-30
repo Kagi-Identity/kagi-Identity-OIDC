@@ -47,6 +47,7 @@ pub fn build_state() -> anyhow::Result<AppState> {
         anyhow::ensure!(cfg.hsts, "KAGI_HSTS=1 is required on Vercel");
         anyhow::ensure!(!cfg.seed_demo, "KAGI_SEED_DEMO must be disabled on Vercel");
         anyhow::ensure!(cfg.require_par, "KAGI_REQUIRE_PAR=1 is required on Vercel");
+        anyhow::ensure!(!cfg.cors_origins.is_empty(), "KAGI_CORS_ORIGINS must list exact HTTPS RP origins on Vercel");
         anyhow::ensure!(
             cfg.admin_token.as_ref().is_some_and(|v| v.len() >= 32),
             "KAGI_ADMIN_TOKEN must be a randomly generated secret of at least 32 characters"
@@ -112,7 +113,7 @@ fn routes_and_security(state: AppState) -> Router {
         .route("/static/kagi.js", get(kagi_js))
         .route("/static/style.css", get(style_css))
         .fallback(not_found)
-        .with_state(state)
+        .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, harden))
 }
 
