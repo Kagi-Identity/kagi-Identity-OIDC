@@ -16,6 +16,8 @@ pub struct Config {
     /// PostgreSQL / Supabase connection string. When set, it takes precedence
     /// over `db_path` (SQLite).
     pub database_url: Option<String>,
+    /// Apply schema migrations at process startup (disable for serverless production).
+    pub auto_migrate: bool,
     pub allow_signup: bool,
     pub seed_demo: bool,
     pub require_par: bool,
@@ -161,6 +163,7 @@ impl Config {
             rp_name: non_empty("KAGI_RP_NAME").unwrap_or_else(|| "Kagi Identity".to_string()),
             db_path: non_empty("KAGI_DB").unwrap_or_else(|| "kagi.db".to_string()),
             database_url: non_empty("KAGI_DATABASE_URL").or_else(|| non_empty("DATABASE_URL")),
+            auto_migrate: flag("KAGI_AUTO_MIGRATE", true),
             allow_signup: flag("KAGI_ALLOW_SIGNUP", true),
             seed_demo: flag("KAGI_SEED_DEMO", false),
             require_par: flag("KAGI_REQUIRE_PAR", false),
