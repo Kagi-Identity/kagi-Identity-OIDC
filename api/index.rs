@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use axum::Router;
 use tower::ServiceBuilder;
 use vercel_runtime::axum::VercelLayer;
-use vercel_runtime::{Error, run};
+use vercel_runtime::{run, Error};
 
 static STATE: OnceLock<Result<kagi::AppState, String>> = OnceLock::new();
 
@@ -22,14 +22,15 @@ async fn main() -> Result<(), Error> {
             // internal configuration or secret material is disclosed.
             eprintln!("[kagi] startup configuration failed: {message}");
             Router::new().fallback(|| async {
-                (StatusCode::SERVICE_UNAVAILABLE, "service temporarily unavailable")
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "service temporarily unavailable",
+                )
             })
         }
     };
 
-    let service = ServiceBuilder::new()
-        .layer(VercelLayer::new())
-        .service(app);
+    let service = ServiceBuilder::new().layer(VercelLayer::new()).service(app);
 
     run(service).await
 }
