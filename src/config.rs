@@ -262,18 +262,28 @@ impl Config {
     }
 
     pub fn is_local(&self) -> bool {
-        let host = self
-            .issuer
-            .split("://")
-            .nth(1)
-            .unwrap_or("")
-            .split('/')
-            .next()
-            .unwrap_or("")
-            .split(':')
-            .next()
-            .unwrap_or("");
-        matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
+        let Ok(uri) = self.issuer.parse::<axum::http::Uri>() else {
+            return true;
+        };
+        let Some(authority) = uri.authority() else {
+            return true;
+        };
+        let authority = authority.as_str();
+        let host = if authority.starts_with('[') {
+            authority
+                .split(']')
+                .next()
+                .unwrap_or("")
+                .trim_start_matches('[')
+        } else {
+            authority.split(':').next().unwrap_or(authority)
+        };
+        let host_lower = host.to_ascii_lowercase();
+        host_lower == "localhost"
+            || host_lower.ends_with(".localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
     }
 
     /// Human-readable warnings printed at start-up. These do not block boot:
@@ -333,6 +343,50 @@ mod origin_tests {
             "/relative/path",
         ] {
             assert!(validate_origin(value).is_err(), "accepted invalid origin: {value}");
+        }
+    }
+
+    #[test]
+    fn detects_all_loopback_and_unspecified_address_families() {
+        for host in ["localhost", "login.localhost", "127.0.0.1", "127.42.1.9", "::1", "0.0.0.0", "::"] {
+            let issuer = if host.contains(':') {
+                format!("https://[{host}]")
+            } else {
+                format!("https://{host}")
+            };
+            let config = super::Config {
+                issuer,
+                bind: "127.0.0.1:8080".to_string(),
+                rp_id: "localhost".to_string(),
+                rp_name: "test".to_string(),
+                origin: "https://localhost".to_string(),
+                db_path: ":memory:".to_string(),
+                database_url: None,
+                auto_migrate: true,
+                production: false,
+                allow_signup: true,
+                seed_demo: false,
+                require_par: false,
+                require_dpop: false,
+                admin_token: None,
+                registration_token: None,
+                cors_origins: Vec::new(),
+                cookie_secure: false,
+                hsts: false,
+                trust_proxy: false,
+                rate_limit: true,
+                recovery_enabled: true,
+                max_passkeys: 10,
+                audit_retention_days: 90,
+                session_ttl: 3600,
+                session_idle_ttl: 1800,
+                code_ttl: 60,
+                access_ttl: 300,
+                refresh_ttl: 3600,
+                id_ttl: 300,
+                par_ttl: 90,
+            };
+            assert!(config.is_local(), "did not detect local issuer host: {host}");
         }
     }
 
