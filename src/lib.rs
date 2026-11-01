@@ -84,30 +84,7 @@ pub fn build_state() -> anyhow::Result<AppState> {
     let cfg = Arc::new(Config::from_env()?);
     let is_vercel = std::env::var("VERCEL").as_deref() == Ok("1");
     validate_production_config(&cfg, is_vercel)?;
-    if is_vercel {
-        anyhow::ensure!(
-            cfg.database_url.as_deref().is_some_and(|u| u.starts_with("postgres://") || u.starts_with("postgresql://")),
-            "Vercel production requires KAGI_DATABASE_URL (PostgreSQL); ephemeral SQLite is not supported"
-        );
-        anyhow::ensure!(cfg.issuer.starts_with("https://"), "Vercel requires an HTTPS KAGI_ISSUER");
-        anyhow::ensure!(cfg.origin == cfg.issuer, "KAGI_ORIGIN must exactly match KAGI_ISSUER for this deployment");
-        anyhow::ensure!(cfg.cookie_secure, "KAGI_COOKIE_SECURE=1 is required on Vercel");
-        anyhow::ensure!(cfg.hsts, "KAGI_HSTS=1 is required on Vercel");
-        anyhow::ensure!(!cfg.seed_demo, "KAGI_SEED_DEMO must be disabled on Vercel");
-        anyhow::ensure!(cfg.require_par, "KAGI_REQUIRE_PAR=1 is required on Vercel");
-        anyhow::ensure!(cfg.trust_proxy, "KAGI_TRUST_PROXY=1 is required behind the Vercel proxy");
-        anyhow::ensure!(!cfg.auto_migrate, "KAGI_AUTO_MIGRATE=0 is required; apply database schema before deployment");
-        anyhow::ensure!(cfg.rate_limit, "KAGI_RATE_LIMIT=1 is required in production");
-        anyhow::ensure!(!cfg.cors_origins.is_empty(), "KAGI_CORS_ORIGINS must list exact HTTPS RP origins on Vercel");
-        anyhow::ensure!(
-            cfg.admin_token.as_ref().is_some_and(|v| v.len() >= 32),
-            "KAGI_ADMIN_TOKEN must be a randomly generated secret of at least 32 characters"
-        );
-        anyhow::ensure!(
-            cfg.registration_token.as_ref().is_some_and(|v| v.len() >= 32),
-            "KAGI_REGISTRATION_TOKEN must be a randomly generated secret of at least 32 characters"
-        );
-    }
+
 
     let db = Arc::new(Db::open_with_options(cfg.database_url.as_deref(), &cfg.db_path, cfg.auto_migrate)?);
     if cfg.seed_demo {
