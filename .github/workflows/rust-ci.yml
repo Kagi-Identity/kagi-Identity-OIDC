@@ -209,7 +209,9 @@ jobs:
           KAGI_ADMIN_TOKEN=ci-only-admin-secret-that-is-long-enough
           KAGI_REGISTRATION_TOKEN=ci-only-registration-secret-that-is-long-enough
           EOF
-          docker compose --env-file "$RUNNER_TEMP/kagi-production.env" -f compose.production.yaml config --quiet
+          cp "$RUNNER_TEMP/kagi-production.env" .env.production
+          trap 'rm -f .env.production' EXIT
+          docker compose --env-file .env.production -f compose.production.yaml config --quiet
 
       - name: Build and start local stack
         run: docker compose -f compose.yaml up --build -d
