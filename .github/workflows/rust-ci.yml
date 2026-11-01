@@ -30,17 +30,20 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
       - name: Compile
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
 
       - name: Run tests
-        run: cargo test --all-targets
+        run: cargo test --locked --all-targets
 
       - name: Run Clippy
-        run: cargo clippy --all-targets
+        run: cargo clippy --locked --all-targets
 
       - name: Release build
-        run: cargo build --release
+        run: cargo build --locked --release
 
       - name: Upload resolved Cargo lockfile
         uses: actions/upload-artifact@v4
@@ -59,9 +62,6 @@ jobs:
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Resolve Cargo lockfile for audit
-        run: cargo generate-lockfile
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -93,7 +93,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check requests cryptography
 
       - name: Build release server
-        run: cargo build --release
+        run: cargo build --locked --release
 
       - name: Start isolated test server
         env:
@@ -183,10 +183,10 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Validate Compose configuration
-        run: docker compose config --quiet
+        run: docker compose -f compose.yaml config --quiet
 
       - name: Build and start local stack
-        run: docker compose up --build -d
+        run: docker compose -f compose.yaml up --build -d
 
       - name: Check discovery and demo endpoints
         run: |
