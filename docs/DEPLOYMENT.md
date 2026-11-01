@@ -15,7 +15,46 @@ Terminate TLS at a maintained reverse proxy. Ensure the proxy overwrites forward
 
 Do not publish the Kagi port directly to the internet. Apply request/body-size limits and timeouts at the edge. The application also uses atomic PostgreSQL-backed rate-limit counters so enforcement is shared across independently scaled function instances. The forwarded client IP is trusted only when `KAGI_TRUST_PROXY=1`; enable it only behind the Vercel proxy or another proxy that overwrites `X-Forwarded-For`.
 
-## 2. Required identity settings
+## 2. Self-hosted Docker deployment
+
+The repository includes a production Compose template for a Linux host with Docker Engine and Compose. It runs Kagi as a non-root, read-only container behind Caddy, which obtains and renews HTTPS certificates automatically. PostgreSQL is intentionally external: use a managed PostgreSQL service or a separately operated database with TLS, backups, monitoring, and restricted network access.
+
+1. Point the identity hostname (for example, `identity.example.com`) at the Docker host. Allow inbound TCP ports 80 and 443; UDP 443 is optional for HTTP/3.
+2. Create a database and a least-privilege account. Set `KAGI_DATABASE_URL` to a TLS-enabled PostgreSQL URL reachable from the host.
+3. Apply the schema once, before starting Kagi:
+
+   ```bash
+   export KAGI_DATABASE_URL='postgresql://USER:PASSWORD@DB_HOST:5432/DB_NAME?sslmode=require'
+   psql "$KAGI_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/schema.sql
+   ```
+
+   Use a secret manager or protected shell environment for the URL. Do not paste it into a command literal that will be saved in shell history.
+4. Copy `.env.production.example` to `.env.production`. Replace the domain, email, database URL, relying-party origins, and both random secrets. Generate the secrets separately with `openssl rand -base64 48`. Keep `.env.production` out of version control.
+5. Check the rendered deployment configuration and start the stack:
+
+   ```bash
+   docker compose --env-file .env.production -f compose.production.yaml config --quiet
+   docker compose --env-file .env.production -f compose.production.yaml up --build -d
+   docker compose --env-file .env.production -f compose.production.yaml ps
+   docker compose --env-file .env.production -f compose.production.yaml logs -f kagi caddy
+   ```
+6. Verify the HTTPS endpoints:
+
+   ```bash
+   curl --fail https://identity.example.com/healthz
+   curl --fail https://identity.example.com/.well-known/openid-configuration
+   curl --fail https://identity.example.com/jwks.json
+   ```
+
+   The discovery document's `issuer` must exactly match `KAGI_ISSUER`.
+
+The production stack exposes only Caddy on the host. Kagi is reachable on the private Compose network, runs as UID 10001, drops Linux capabilities, uses a read-only root filesystem, and has a database-backed readiness check. Caddy overwrites the forwarding headers used by Kagi's trusted-proxy rate limiter.
+
+To update, pull/review the intended source revision, back up PostgreSQL and the Caddy data volume, then rebuild with the same Compose command. Apply any future schema migration as a controlled one-off operation before rolling out application instances. Do not enable automatic schema migration during concurrent production starts.
+
+The example uses an external PostgreSQL service on purpose; it does not install, secure, back up, or monitor a database for you. A ready container is not proof of an operationally safe identity service. Configure database backups and restore drills, secret rotation, alerting, rate/connection limits, and an incident-response process.
+
+## 3. Required identity settings
 
 Choose one public origin and use it consistently. Example values below are placeholders:
 
@@ -40,7 +79,7 @@ Replace every example with your real deployment values. `KAGI_ISSUER` and `KAGI_
 
 `KAGI_REQUIRE_PAR=1` and `KAGI_REQUIRE_DPOP=1` enable stricter request handling; they do not prove FAPI 2.0 compliance. Validate every relying party's supported flow before enabling these settings.
 
-## 3. Vercel Rust Runtime
+## 4. Vercel Rust Runtime
 
 For Vercel, the repository uses the official Rust Runtime with an Axum adapter in `api/index.rs`. All HTTP paths are rewritten to the same Axum router. Do not run the local `TcpListener` server as a Vercel Function.
 
@@ -67,7 +106,7 @@ KAGI_REGISTRATION_TOKEN=<different random secret, 32+ characters>
 
 Before deploying, apply `supabase/schema.sql` once using your database's migration workflow, then set `KAGI_AUTO_MIGRATE=0`. This avoids concurrent DDL races when multiple serverless instances cold-start. Each warm function instance currently maintains one serialized database connection; use a managed PostgreSQL pooler for serverless connection limits and load-test before production traffic.
 
-## 4. Secrets
+## 5. Secrets
 
 Generate high-entropy values outside source control. For example, on a machine with OpenSSL:
 
@@ -82,7 +121,7 @@ Use separate values for `KAGI_ADMIN_TOKEN` and `KAGI_REGISTRATION_TOKEN`. Store 
 - Do not enable either endpoint with a known or short placeholder token.
 - Keep secrets out of logs, crash reports, CI output, and shell history where practical.
 
-## 5. Storage and key protection
+## 6. Storage and key protection
 
 SQLite is convenient for local development and single-node deployments. For PostgreSQL/Supabase, set `KAGI_DATABASE_URL` to a private TLS-enabled connection string. Keep the database inaccessible to public clients; use a least-privilege database account where supported.
 
@@ -90,7 +129,7 @@ Signing keys are persisted in the database in this implementation. Consequently,
 
 PostgreSQL stores sessions, authorization codes, flows, refresh/access-token state, signing keys, DPoP replay entries, and shared rate-limit counters. Each instance caches its signing-key ring briefly and refreshes it every five seconds to converge after rotation. The database connection itself is serialized within each warm instance; use a pooler and load-test. This is multi-instance-capable, but it is not a claim of unlimited horizontal scalability or zero-downtime failover.
 
-## 6. Suggested rollout
+## 7. Suggested rollout
 
 1. Configure the public origin, RP ID, TLS, and secret management.
 2. Disable demo seeding and decide whether self-signup is appropriate.
@@ -101,7 +140,7 @@ PostgreSQL stores sessions, authorization codes, flows, refresh/access-token sta
 7. Monitor authentication failures, rate limiting, database health, and key-rotation events.
 8. Roll out to a small set of test clients before general availability.
 
-## 7. Pre-launch checklist
+## 8. Pre-launch checklist
 
 - [ ] HTTPS is enforced end-to-end; HTTP redirects and proxy behavior are reviewed.
 - [ ] Issuer, WebAuthn origin, and RP ID are aligned.
