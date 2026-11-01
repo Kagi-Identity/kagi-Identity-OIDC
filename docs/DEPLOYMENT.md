@@ -24,8 +24,11 @@ The repository includes a production Compose template for a Linux host with Dock
 3. Apply the schema once, before starting Kagi:
 
    ```bash
-   export KAGI_DATABASE_URL='postgresql://USER:PASSWORD@DB_HOST:5432/DB_NAME?sslmode=require'
+   read -r -s -p "PostgreSQL TLS URL: " KAGI_DATABASE_URL
+   echo
+   export KAGI_DATABASE_URL
    psql "$KAGI_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/schema.sql
+   unset KAGI_DATABASE_URL
    ```
 
    Use a secret manager or protected shell environment for the URL. Do not paste it into a command literal that will be saved in shell history.
@@ -79,7 +82,15 @@ Replace every example with your real deployment values. `KAGI_ISSUER` and `KAGI_
 
 `KAGI_REQUIRE_PAR=1` and `KAGI_REQUIRE_DPOP=1` enable stricter request handling; they do not prove FAPI 2.0 compliance. Validate every relying party's supported flow before enabling these settings.
 
-## 4. Vercel Rust Runtime
+## 4. Any OCI-compatible container platform
+
+The same `Dockerfile` builds a portable OCI image. Build it in CI or on a trusted build host, publish it to your private container registry, and deploy it to a platform that can run containers. Configure the platform ingress to terminate HTTPS and forward to container port `8080`; do not expose the Kagi container directly to the public internet.
+
+Set the required production variables described in [Configuration](CONFIGURATION.md), including `KAGI_ENV=production`, `KAGI_BIND=0.0.0.0:8080`, a TLS-enabled PostgreSQL URL, exact issuer/origin/RP ID values, and separate strong administration/registration secrets. Apply `supabase/schema.sql` as a one-off migration before the first rollout. Configure the platform readiness probe as `GET /healthz`; this endpoint checks the database and signing-key tables, not merely process liveness.
+
+Set `KAGI_TRUST_PROXY=1` only when the platform's trusted ingress overwrites `X-Forwarded-For`. If it does not, keep Kagi private and use a proxy configuration that sanitizes forwarded headers before enabling this option. Keep the application port private, persist the external database, and configure backup/restore, secret rotation, monitoring, and rolling-deploy behavior in the platform.
+
+## 5. Vercel Rust Runtime
 
 For Vercel, the repository uses the official Rust Runtime with an Axum adapter in `api/index.rs`. All HTTP paths are rewritten to the same Axum router. Do not run the local `TcpListener` server as a Vercel Function.
 
@@ -106,7 +117,7 @@ KAGI_REGISTRATION_TOKEN=<different random secret, 32+ characters>
 
 Before deploying, apply `supabase/schema.sql` once using your database's migration workflow, then set `KAGI_AUTO_MIGRATE=0`. This avoids concurrent DDL races when multiple serverless instances cold-start. Each warm function instance currently maintains one serialized database connection; use a managed PostgreSQL pooler for serverless connection limits and load-test before production traffic.
 
-## 5. Secrets
+## 6. Secrets
 
 Generate high-entropy values outside source control. For example, on a machine with OpenSSL:
 
@@ -121,7 +132,7 @@ Use separate values for `KAGI_ADMIN_TOKEN` and `KAGI_REGISTRATION_TOKEN`. Store 
 - Do not enable either endpoint with a known or short placeholder token.
 - Keep secrets out of logs, crash reports, CI output, and shell history where practical.
 
-## 6. Storage and key protection
+## 7. Storage and key protection
 
 SQLite is convenient for local development and single-node deployments. For PostgreSQL/Supabase, set `KAGI_DATABASE_URL` to a private TLS-enabled connection string. Keep the database inaccessible to public clients; use a least-privilege database account where supported.
 
@@ -129,7 +140,7 @@ Signing keys are persisted in the database in this implementation. Consequently,
 
 PostgreSQL stores sessions, authorization codes, flows, refresh/access-token state, signing keys, DPoP replay entries, and shared rate-limit counters. Each instance caches its signing-key ring briefly and refreshes it every five seconds to converge after rotation. The database connection itself is serialized within each warm instance; use a pooler and load-test. This is multi-instance-capable, but it is not a claim of unlimited horizontal scalability or zero-downtime failover.
 
-## 7. Suggested rollout
+## 8. Suggested rollout
 
 1. Configure the public origin, RP ID, TLS, and secret management.
 2. Disable demo seeding and decide whether self-signup is appropriate.
@@ -140,7 +151,7 @@ PostgreSQL stores sessions, authorization codes, flows, refresh/access-token sta
 7. Monitor authentication failures, rate limiting, database health, and key-rotation events.
 8. Roll out to a small set of test clients before general availability.
 
-## 8. Pre-launch checklist
+## 9. Pre-launch checklist
 
 - [ ] HTTPS is enforced end-to-end; HTTP redirects and proxy behavior are reviewed.
 - [ ] Issuer, WebAuthn origin, and RP ID are aligned.
