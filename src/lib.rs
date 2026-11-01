@@ -34,6 +34,17 @@ pub struct AppState {
     pub last_key_refresh: Arc<AtomicI64>,
 }
 
+fn is_usable_production_secret(secret: Option<&String>) -> bool {
+    secret.is_some_and(|value| {
+        let upper = value.to_ascii_uppercase();
+        value.len() >= 32
+            && !upper.contains("REPLACE_WITH")
+            && !upper.contains("CHANGE_ME")
+            && !upper.contains("PLACEHOLDER")
+            && !upper.contains("YOUR_SECRET")
+    })
+}
+
 /// Enforce the same fail-closed baseline for self-hosted and serverless
 /// production deployments. Vercel is always production, even if KAGI_ENV is
 /// accidentally set to a weaker value.
@@ -49,6 +60,7 @@ fn validate_production_config(cfg: &Config, is_vercel: bool) -> anyhow::Result<(
         "production requires KAGI_DATABASE_URL (PostgreSQL); SQLite is not supported"
     );
     anyhow::ensure!(cfg.issuer.starts_with("https://"), "production requires an HTTPS KAGI_ISSUER");
+    anyhow::ensure!(!cfg.is_local(), "production KAGI_ISSUER must not use localhost or a loopback address");
     anyhow::ensure!(
         cfg.origin == cfg.issuer,
         "KAGI_ORIGIN must exactly match KAGI_ISSUER for this deployment"
@@ -61,12 +73,16 @@ fn validate_production_config(cfg: &Config, is_vercel: bool) -> anyhow::Result<(
     anyhow::ensure!(!cfg.auto_migrate, "KAGI_AUTO_MIGRATE=0 is required; apply the database schema before deployment");
     anyhow::ensure!(cfg.rate_limit, "KAGI_RATE_LIMIT=1 is required in production");
     anyhow::ensure!(
-        cfg.admin_token.as_ref().is_some_and(|value| value.len() >= 32),
-        "KAGI_ADMIN_TOKEN must be a randomly generated secret of at least 32 characters"
+        is_usable_production_secret(cfg.admin_token.as_ref()),
+        "KAGI_ADMIN_TOKEN must be a unique, randomly generated secret of at least 32 characters"
     );
     anyhow::ensure!(
-        cfg.registration_token.as_ref().is_some_and(|value| value.len() >= 32),
-        "KAGI_REGISTRATION_TOKEN must be a randomly generated secret of at least 32 characters"
+        is_usable_production_secret(cfg.registration_token.as_ref()),
+        "KAGI_REGISTRATION_TOKEN must be a unique, randomly generated secret of at least 32 characters"
+    );
+    anyhow::ensure!(
+        cfg.admin_token != cfg.registration_token,
+        "KAGI_ADMIN_TOKEN and KAGI_REGISTRATION_TOKEN must be different secrets"
     );
 
     if is_vercel {
