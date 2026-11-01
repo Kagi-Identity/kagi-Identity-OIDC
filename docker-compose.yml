@@ -1,0 +1,24 @@
+services:
+  kagi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      KAGI_BIND: "0.0.0.0:8080"
+      KAGI_ISSUER: "http://localhost:8080"
+      KAGI_RP_ID: "localhost"
+      KAGI_ORIGIN: "http://localhost:8080"
+      KAGI_DB: "/data/kagi.db"
+      KAGI_AUTO_MIGRATE: "1"
+      KAGI_SEED_DEMO: "1"
+      KAGI_ALLOW_SIGNUP: "1"
+      KAGI_COOKIE_SECURE: "0"
+      KAGI_HSTS: "0"
+    volumes:
+      - kagi-data:/data
+    restart: unless-stopped
+
+volumes:
+  kagi-data:
