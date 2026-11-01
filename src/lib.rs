@@ -34,11 +34,57 @@ pub struct AppState {
     pub last_key_refresh: Arc<AtomicI64>,
 }
 
+/// Enforce the same fail-closed baseline for self-hosted and serverless
+/// production deployments. Vercel is always production, even if KAGI_ENV is
+/// accidentally set to a weaker value.
+fn validate_production_config(cfg: &Config, is_vercel: bool) -> anyhow::Result<()> {
+    if !cfg.production && !is_vercel {
+        return Ok(());
+    }
+
+    anyhow::ensure!(
+        cfg.database_url
+            .as_deref()
+            .is_some_and(|url| url.starts_with("postgres://") || url.starts_with("postgresql://")),
+        "production requires KAGI_DATABASE_URL (PostgreSQL); SQLite is not supported"
+    );
+    anyhow::ensure!(cfg.issuer.starts_with("https://"), "production requires an HTTPS KAGI_ISSUER");
+    anyhow::ensure!(
+        cfg.origin == cfg.issuer,
+        "KAGI_ORIGIN must exactly match KAGI_ISSUER for this deployment"
+    );
+    anyhow::ensure!(cfg.cookie_secure, "KAGI_COOKIE_SECURE=1 is required in production");
+    anyhow::ensure!(cfg.hsts, "KAGI_HSTS=1 is required in production");
+    anyhow::ensure!(!cfg.seed_demo, "KAGI_SEED_DEMO must be disabled in production");
+    anyhow::ensure!(cfg.require_par, "KAGI_REQUIRE_PAR=1 is required in production");
+    anyhow::ensure!(cfg.trust_proxy, "KAGI_TRUST_PROXY=1 is required behind the trusted HTTPS proxy");
+    anyhow::ensure!(!cfg.auto_migrate, "KAGI_AUTO_MIGRATE=0 is required; apply the database schema before deployment");
+    anyhow::ensure!(cfg.rate_limit, "KAGI_RATE_LIMIT=1 is required in production");
+    anyhow::ensure!(
+        cfg.admin_token.as_ref().is_some_and(|value| value.len() >= 32),
+        "KAGI_ADMIN_TOKEN must be a randomly generated secret of at least 32 characters"
+    );
+    anyhow::ensure!(
+        cfg.registration_token.as_ref().is_some_and(|value| value.len() >= 32),
+        "KAGI_REGISTRATION_TOKEN must be a randomly generated secret of at least 32 characters"
+    );
+
+    if is_vercel {
+        anyhow::ensure!(
+            !cfg.cors_origins.is_empty(),
+            "KAGI_CORS_ORIGINS must list exact HTTPS RP origins on Vercel"
+        );
+    }
+    Ok(())
+}
+
 /// Initialize state once per process/function instance. All durable state,
 /// including signing keys, sessions and OAuth artifacts, lives in PostgreSQL.
 pub fn build_state() -> anyhow::Result<AppState> {
     let cfg = Arc::new(Config::from_env()?);
-    if std::env::var("VERCEL").as_deref() == Ok("1") {
+    let is_vercel = std::env::var("VERCEL").as_deref() == Ok("1");
+    validate_production_config(&cfg, is_vercel)?;
+    if is_vercel {
         anyhow::ensure!(
             cfg.database_url.as_deref().is_some_and(|u| u.starts_with("postgres://") || u.starts_with("postgresql://")),
             "Vercel production requires KAGI_DATABASE_URL (PostgreSQL); ephemeral SQLite is not supported"
@@ -318,7 +364,12 @@ async fn not_found() -> Response {
 
 pub async fn run_local() -> anyhow::Result<()> {
     let cfg = Arc::new(Config::from_env()?);
-    let db = Arc::new(Db::open(cfg.database_url.as_deref(), &cfg.db_path)?);
+    validate_production_config(&cfg, false)?;
+    let db = Arc::new(Db::open_with_options(
+        cfg.database_url.as_deref(),
+        &cfg.db_path,
+        cfg.auto_migrate,
+    )?);
     if cfg.seed_demo {
         anyhow::ensure!(cfg.is_local(), "demo client seeding is only allowed for localhost");
         db.with(|c| db::seed_demo_client(c))?;
