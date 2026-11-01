@@ -35,7 +35,7 @@ To delete the local test database and keys as well, run `docker compose down --v
 
 For a portable Linux/Docker deployment, use `compose.production.yaml` with `.env.production.example`. It places Kagi behind Caddy-managed HTTPS, keeps the application container private and hardened, and connects to an external TLS-enabled PostgreSQL database. Set `KAGI_ENV=production`; the application then refuses to start unless its production security prerequisites are met. Follow the [deployment guide](docs/DEPLOYMENT.md), apply the PostgreSQL schema before startup, and keep real secrets outside the repository.
 
-The production template is a deployment baseline, not a managed database, backup service, KMS, security certification, or substitute for independent assessment.
+The same Dockerfile can be built as an OCI image for container platforms such as managed container services or Kubernetes. Configure HTTPS ingress, private networking, a TLS-enabled PostgreSQL database, the production environment variables, and `/healthz` readiness as described in the [deployment guide](docs/DEPLOYMENT.md).\n\nThe production template is a deployment baseline, not a managed database, backup service, KMS, security certification, or substitute for independent assessment.
 
 ### Run without Docker
 
