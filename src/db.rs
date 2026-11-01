@@ -849,7 +849,9 @@ impl Db {
     }
 
     fn open_postgres(url: &str, auto_migrate: bool) -> anyhow::Result<Self> {
-        let mut config: postgres::Config = url.parse().context("parsing KAGI_DATABASE_URL")?;
+        let mut config: postgres::Config = url.parse().map_err(|_| {
+            anyhow::anyhow!("parsing KAGI_DATABASE_URL failed; check the URL syntax")
+        })?;
         // Identity data and signing keys must never travel over plaintext TCP.
         // Require TLS even if the supplied URL omitted sslmode=require.
         config.ssl_mode(postgres::config::SslMode::Require);
@@ -1630,6 +1632,19 @@ mod schema_regression_tests {
         let error = super::Db::open_with_options(Some(supplied), ":memory:", false)
             .err()
             .expect("an unsupported database scheme must be rejected");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("KAGI_DATABASE_URL"));
+        assert!(!message.contains("very-secret-password"));
+        assert!(!message.contains("service-user"));
+    }
+
+    #[test]
+    fn malformed_postgres_url_error_does_not_disclose_credentials() {
+        let supplied = "postgresql://service-user:very-secret-password@db.example.invalid:not-a-port/identity";
+        let error = super::Db::open_with_options(Some(supplied), ":memory:", false)
+            .err()
+            .expect("a malformed PostgreSQL URL must be rejected");
         let message = format!("{error:#}");
 
         assert!(message.contains("KAGI_DATABASE_URL"));
