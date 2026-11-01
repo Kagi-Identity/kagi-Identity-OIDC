@@ -203,7 +203,7 @@ jobs:
 
       - name: Show container logs on failure
         if: failure()
-        run: docker compose logs --no-color
+        run: docker compose -f compose.yaml logs --no-color
 
       - name: Stop stack and remove isolated test volume
         if: always()
