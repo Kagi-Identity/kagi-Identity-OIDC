@@ -1,0 +1,15 @@
+{
+	# Keep automatic HTTPS and certificate renewal enabled.
+	email {$ACME_EMAIL}
+}
+
+{$KAGI_DOMAIN} {
+	encode zstd gzip
+
+	# Overwrite, rather than trust, client-supplied forwarding headers.
+	reverse_proxy kagi:8080 {
+		header_up X-Forwarded-For {http.request.remote.host}
+		header_up X-Forwarded-Proto {http.request.scheme}
+		header_up X-Forwarded-Host {http.request.host}
+	}
+}
