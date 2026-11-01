@@ -235,4 +235,4 @@ jobs:
 
       - name: Stop stack and remove isolated test volume
         if: always()
-        run: docker compose down --volumes
+        run: docker compose -f compose.yaml down --volumes
