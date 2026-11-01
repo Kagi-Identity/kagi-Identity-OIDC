@@ -71,6 +71,42 @@ fn non_empty(name: &str) -> Option<String> {
     env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
+
+/// Validate a WebAuthn origin as a scheme + authority only.
+///
+/// WebAuthn clientDataJSON contains the browser origin, never an application
+/// path. Accepting a path here creates a configuration that can start
+/// successfully but can never match a real browser origin during verification.
+fn validate_origin(origin: &str) -> anyhow::Result<()> {
+    let uri = origin
+        .parse::<axum::http::Uri>()
+        .map_err(|_| anyhow::anyhow!("KAGI_ORIGIN must be a valid absolute URL"))?;
+
+    anyhow::ensure!(
+        matches!(uri.scheme_str(), Some("http" | "https")),
+        "KAGI_ORIGIN must use http:// or https://"
+    );
+
+    let authority = uri
+        .authority()
+        .ok_or_else(|| anyhow::anyhow!("KAGI_ORIGIN must include a host"))?;
+    anyhow::ensure!(
+        !authority.as_str().contains('@'),
+        "KAGI_ORIGIN must not contain credentials"
+    );
+
+    let path_and_query = uri
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or("/");
+    anyhow::ensure!(
+        path_and_query == "/",
+        "KAGI_ORIGIN must not contain a path, query, or fragment"
+    );
+
+    Ok(())
+}
+
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let issuer = non_empty("KAGI_ISSUER").unwrap_or_else(|| "http://localhost:8080".to_string());
@@ -112,10 +148,7 @@ impl Config {
             .unwrap_or_else(|| issuer.clone())
             .trim_end_matches('/')
             .to_string();
-        anyhow::ensure!(
-            origin.starts_with("https://") || origin.starts_with("http://"),
-            "KAGI_ORIGIN must start with http:// or https://"
-        );
+        validate_origin(&origin)?;
 
         let session_ttl = num("KAGI_SESSION_TTL", 8 * 3600);
         let session_idle_ttl = num("KAGI_SESSION_IDLE_TTL", 2 * 3600);
@@ -248,5 +281,30 @@ impl Config {
             );
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::validate_origin;
+
+    #[test]
+    fn accepts_http_and_https_origins() {
+        assert!(validate_origin("http://localhost:8080").is_ok());
+        assert!(validate_origin("https://id.example.com").is_ok());
+        assert!(validate_origin("https://[::1]:8443").is_ok());
+    }
+
+    #[test]
+    fn rejects_non_origin_urls() {
+        for value in [
+            "https://id.example.com/login",
+            "https://id.example.com/?next=/account",
+            "https://user:password@id.example.com",
+            "ftp://id.example.com",
+            "/relative/path",
+        ] {
+            assert!(validate_origin(value).is_err(), "accepted invalid origin: {value}");
+        }
     }
 }
