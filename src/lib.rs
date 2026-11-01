@@ -388,3 +388,76 @@ pub async fn run_local() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod production_config_tests {
+    use super::{is_usable_production_secret, validate_production_config};
+    use crate::config::Config;
+
+    fn valid_production_config() -> Config {
+        Config {
+            issuer: "https://identity.example.com".to_string(),
+            bind: "0.0.0.0:8080".to_string(),
+            rp_id: "identity.example.com".to_string(),
+            rp_name: "Example Identity".to_string(),
+            origin: "https://identity.example.com".to_string(),
+            db_path: "/data/kagi.db".to_string(),
+            database_url: Some(
+                "postgresql://kagi:unused-password@db.example.com:5432/kagi?sslmode=require"
+                    .to_string(),
+            ),
+            auto_migrate: false,
+            production: true,
+            allow_signup: false,
+            seed_demo: false,
+            require_par: true,
+            require_dpop: true,
+            admin_token: Some("A".repeat(48)),
+            registration_token: Some("B".repeat(48)),
+            cors_origins: vec!["https://app.example.com".to_string()],
+            cookie_secure: true,
+            hsts: true,
+            trust_proxy: true,
+            rate_limit: true,
+            recovery_enabled: true,
+            max_passkeys: 10,
+            audit_retention_days: 90,
+            session_ttl: 28_800,
+            session_idle_ttl: 7_200,
+            code_ttl: 60,
+            access_ttl: 300,
+            refresh_ttl: 2_592_000,
+            id_ttl: 300,
+            par_ttl: 90,
+        }
+    }
+
+    #[test]
+    fn production_configuration_passes_with_all_required_guardrails() {
+        assert!(validate_production_config(&valid_production_config(), false).is_ok());
+    }
+
+    #[test]
+    fn production_rejects_missing_or_placeholder_secrets() {
+        let mut config = valid_production_config();
+        config.admin_token = Some("REPLACE_WITH_A_RANDOM_SECRET_OF_AT_LEAST_32_CHARACTERS".to_string());
+        assert!(validate_production_config(&config, false).is_err());
+        assert!(!is_usable_production_secret(config.admin_token.as_ref()));
+    }
+
+    #[test]
+    fn production_requires_distinct_administration_and_registration_secrets() {
+        let mut config = valid_production_config();
+        config.registration_token = config.admin_token.clone();
+        assert!(validate_production_config(&config, false).is_err());
+    }
+
+    #[test]
+    fn vercel_requires_a_non_empty_exact_cors_allowlist() {
+        let mut config = valid_production_config();
+        config.cors_origins.clear();
+        assert!(validate_production_config(&config, false).is_ok());
+        assert!(validate_production_config(&config, true).is_err());
+    }
+}
+
