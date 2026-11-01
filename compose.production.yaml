@@ -1,0 +1,51 @@
+services:
+  kagi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kagi-identity:production
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env.production
+    environment:
+      KAGI_BIND: "0.0.0.0:8080"
+      KAGI_ENV: "production"
+    expose:
+      - "8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    init: true
+    environment:
+      KAGI_DOMAIN: ${KAGI_DOMAIN:?Set KAGI_DOMAIN in .env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      kagi:
+        condition: service_healthy
+
+volumes:
+  caddy_data:
+  caddy_config:
