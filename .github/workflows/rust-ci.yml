@@ -185,6 +185,32 @@ jobs:
       - name: Validate Compose configuration
         run: docker compose -f compose.yaml config --quiet
 
+      - name: Validate hardened production Compose template
+        run: |
+          cat > "$RUNNER_TEMP/kagi-production.env" <<'EOF'
+          KAGI_DOMAIN=identity.example.test
+          ACME_EMAIL=ops@example.test
+          KAGI_ISSUER=https://identity.example.test
+          KAGI_ORIGIN=https://identity.example.test
+          KAGI_RP_ID=identity.example.test
+          KAGI_RP_NAME=CI Test Identity
+          KAGI_DATABASE_URL=postgresql://kagi:ci-only@db.example.test:5432/kagi?sslmode=require
+          KAGI_AUTO_MIGRATE=0
+          KAGI_ENV=production
+          KAGI_COOKIE_SECURE=1
+          KAGI_HSTS=1
+          KAGI_SEED_DEMO=0
+          KAGI_ALLOW_SIGNUP=0
+          KAGI_REQUIRE_PAR=1
+          KAGI_REQUIRE_DPOP=1
+          KAGI_TRUST_PROXY=1
+          KAGI_RATE_LIMIT=1
+          KAGI_CORS_ORIGINS=https://app.example.test
+          KAGI_ADMIN_TOKEN=ci-only-admin-secret-that-is-long-enough
+          KAGI_REGISTRATION_TOKEN=ci-only-registration-secret-that-is-long-enough
+          EOF
+          docker compose --env-file "$RUNNER_TEMP/kagi-production.env" -f compose.production.yaml config --quiet
+
       - name: Build and start local stack
         run: docker compose -f compose.yaml up --build -d
 
