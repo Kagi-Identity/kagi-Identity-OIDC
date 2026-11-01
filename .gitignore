@@ -3,3 +3,8 @@
 *.db-shm
 *.db-wal
 .env
+.env.*
+!.env.example
+!.env.production.example
+*.dump
+*.backup
