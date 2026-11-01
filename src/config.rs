@@ -94,7 +94,11 @@ fn validate_origin(origin: &str) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("KAGI_ORIGIN must include a host"))?;
     anyhow::ensure!(
         !authority.as_str().contains('@'),
-        "KAGI_ORIGIN must not contain credentials"
+        "origin must not contain credentials"
+    );
+    anyhow::ensure!(
+        !authority.as_str().contains('*'),
+        "origin must not contain wildcard hosts"
     );
 
     let path_and_query = uri
