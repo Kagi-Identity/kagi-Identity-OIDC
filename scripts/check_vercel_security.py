@@ -27,9 +27,22 @@ def main() -> int:
         "SslMode::Require",
         "CREATE TABLE IF NOT EXISTS rate_limits",
     ))
-    require("src/config.rs", ("KAGI_CORS_ORIGINS", "cors_origins"))
+    require("src/config.rs", ("KAGI_CORS_ORIGINS", "cors_origins", "KAGI_ENV", "validate_https_origin"))
+    require("src/lib.rs", ("validate_production_config", "is_usable_production_secret"))
     require("supabase/schema.sql", ("CREATE TABLE IF NOT EXISTS rate_limits",))
-    print("Vercel security guardrails present: serverless adapter, persistent DB gate, explicit CORS, TLS, shared rate limiting, and key refresh.")
+    require("Dockerfile", ("USER 10001:10001", "HEALTHCHECK"))
+    require("compose.production.yaml", (
+        "read_only: true",
+        "cap_drop:",
+        "no-new-privileges:true",
+        "condition: service_healthy",
+    ))
+    require("deploy/Caddyfile", (
+        "reverse_proxy kagi:8080",
+        "header_up X-Forwarded-For",
+        "header_up X-Forwarded-Proto",
+    ))
+    print("Production guardrails present: serverless and self-hosted startup gates, exact CORS, TLS, shared rate limiting, non-root container, health checks, private app network, and proxy header sanitization.")
     return 0
 
 if __name__ == "__main__":
