@@ -618,7 +618,7 @@ impl Connection {
         match self {
             Connection::Sqlite(c) => {
                 let mut stmt = c.prepare(sql)?;
-                let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+                let cols: Vec<String> = stmt.column_names().map(str::to_owned).collect();
                 let values = sqlite_values(&params);
                 let mut rows = stmt.query(rusqlite::params_from_iter(values.iter()))?;
                 match rows.next()? {
@@ -643,7 +643,7 @@ impl Connection {
         match self {
             Connection::Sqlite(c) => {
                 let mut stmt = c.prepare(sql)?;
-                let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+                let cols: Vec<String> = stmt.column_names().map(str::to_owned).collect();
                 let values = sqlite_values(&params);
                 let mut rows = stmt.query(rusqlite::params_from_iter(values.iter()))?;
                 let mut out = Vec::new();
