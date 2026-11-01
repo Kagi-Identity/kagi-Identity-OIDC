@@ -34,6 +34,7 @@ services:
     init: true
     environment:
       KAGI_DOMAIN: ${KAGI_DOMAIN:?Set KAGI_DOMAIN in .env.production}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env.production}
     ports:
       - "80:80"
       - "443:443"
