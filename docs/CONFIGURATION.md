@@ -6,7 +6,8 @@ All values are read when the process starts. Restart Kagi Identity after changin
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `KAGI_ENV` | `development` (or `production` on Vercel) | `development`, `test`, or `production`; production enforces HTTPS, PostgreSQL, secure cookies/HSTS, PAR, a trusted proxy, rate limiting, disabled demo seeding/auto-migration, and strong administrative/registration secrets |\n| `KAGI_ISSUER` | `http://localhost:8080` | Public issuer origin; no path, query, fragment, or trailing slash |
+| `KAGI_ENV` | `development` (or `production` on Vercel) | `development`, `test`, or `production`; production enforces HTTPS, PostgreSQL, secure cookies/HSTS, PAR, a trusted proxy, rate limiting, disabled demo seeding/auto-migration, and strong administrative/registration secrets |
+| `KAGI_ISSUER` | `http://localhost:8080` | Public issuer origin; no path, query, fragment, or trailing slash |
 | `KAGI_BIND` | `127.0.0.1:8080` | Address and port to bind |
 | `KAGI_RP_ID` | Host derived from issuer | WebAuthn RP ID; bare hostname/domain, no scheme or port |
 | `KAGI_RP_NAME` | `Kagi Identity` | Name displayed by passkey UI |
