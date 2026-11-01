@@ -15,7 +15,7 @@ RUN cargo build --locked --release
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --create-home --home-dir /nonexistent kagi \
     && mkdir -p /data \
@@ -29,4 +29,6 @@ ENV KAGI_BIND=0.0.0.0:8080 \
     KAGI_DB=/data/kagi.db
 
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/healthz"]
 ENTRYPOINT ["/usr/local/bin/kagi"]
