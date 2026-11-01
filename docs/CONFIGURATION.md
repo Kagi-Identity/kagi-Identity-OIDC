@@ -6,7 +6,7 @@ All values are read when the process starts. Restart Kagi Identity after changin
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `KAGI_ISSUER` | `http://localhost:8080` | Public issuer origin; no path, query, fragment, or trailing slash |
+| `KAGI_ENV` | `development` (or `production` on Vercel) | `development`, `test`, or `production`; production enforces HTTPS, PostgreSQL, secure cookies/HSTS, PAR, a trusted proxy, rate limiting, disabled demo seeding/auto-migration, and strong administrative/registration secrets |\n| `KAGI_ISSUER` | `http://localhost:8080` | Public issuer origin; no path, query, fragment, or trailing slash |
 | `KAGI_BIND` | `127.0.0.1:8080` | Address and port to bind |
 | `KAGI_RP_ID` | Host derived from issuer | WebAuthn RP ID; bare hostname/domain, no scheme or port |
 | `KAGI_RP_NAME` | `Kagi Identity` | Name displayed by passkey UI |
@@ -73,4 +73,4 @@ KAGI_ADMIN_TOKEN=retrieve-from-secret-manager
 KAGI_REGISTRATION_TOKEN=retrieve-from-secret-manager
 ```
 
-For Vercel, apply `supabase/schema.sql` once before deployment, then set `KAGI_AUTO_MIGRATE=0` to avoid concurrent schema DDL during cold starts. A stricter flag is not a substitute for conformance testing. Vercel startup intentionally fails closed if required production settings are missing.
+For any self-hosted deployment, set `KAGI_ENV=production`; Vercel automatically uses the same production checks. Apply `supabase/schema.sql` once before deployment, then set `KAGI_AUTO_MIGRATE=0` to avoid concurrent schema DDL during starts/cold starts. The `compose.production.yaml` and `.env.production.example` files provide a self-hosted Caddy + Docker baseline. A stricter flag is not a substitute for conformance testing. Production startup intentionally fails closed if required settings are missing.
