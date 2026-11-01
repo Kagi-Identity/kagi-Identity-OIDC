@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 
-FROM rust:1.88-bookworm AS builder
+# rusqlite 0.41 requires Rust 1.89 or newer. Keep the container toolchain
+# aligned with the dependency graph used by the GitHub Actions build.
+FROM rust:1.89-bookworm AS builder
 WORKDIR /src
 
 # Copy manifests first so dependency compilation can be cached.
@@ -9,7 +11,7 @@ COPY src ./src
 COPY api ./api
 COPY static ./static
 COPY supabase ./supabase
-RUN cargo build --release
+RUN cargo build --locked --release
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
