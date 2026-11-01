@@ -31,6 +31,14 @@ To delete the local test database and keys as well, run `docker compose down --v
 
 **This Compose configuration is for local evaluation only.** It uses HTTP, seeds a demo client, allows signup, and binds the published port to loopback. Never expose it as-is to the public internet.
 
+### Self-hosted production template
+
+For a portable Linux/Docker deployment, use `compose.production.yaml` with `.env.production.example`. It places Kagi behind Caddy-managed HTTPS, keeps the application container private and hardened, and connects to an external TLS-enabled PostgreSQL database. Set `KAGI_ENV=production`; the application then refuses to start unless its production security prerequisites are met. Follow the [deployment guide](docs/DEPLOYMENT.md), apply the PostgreSQL schema before startup, and keep real secrets outside the repository.
+
+The same Dockerfile can be built as an OCI image for container platforms such as managed container services or Kubernetes. Configure HTTPS ingress, private networking, a TLS-enabled PostgreSQL database, the production environment variables, and `/healthz` readiness as described in the [deployment guide](docs/DEPLOYMENT.md).
+
+The production template is a deployment baseline, not a managed database, backup service, KMS, security certification, or substitute for independent assessment.
+
 ### Run without Docker
 
 Install the Rust toolchain required by `Cargo.toml`, then:

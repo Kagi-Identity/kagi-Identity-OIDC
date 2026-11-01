@@ -7,3 +7,6 @@
 *.db-wal
 __pycache__
 .pytest_cache
+.env.*
+*.dump
+*.backup

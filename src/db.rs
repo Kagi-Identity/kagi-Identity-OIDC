@@ -618,7 +618,7 @@ impl Connection {
         match self {
             Connection::Sqlite(c) => {
                 let mut stmt = c.prepare(sql)?;
-                let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+                let cols: Vec<String> = stmt.column_names().map(str::to_owned).collect();
                 let values = sqlite_values(&params);
                 let mut rows = stmt.query(rusqlite::params_from_iter(values.iter()))?;
                 match rows.next()? {
@@ -643,7 +643,7 @@ impl Connection {
         match self {
             Connection::Sqlite(c) => {
                 let mut stmt = c.prepare(sql)?;
-                let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+                let cols: Vec<String> = stmt.column_names().map(str::to_owned).collect();
                 let values = sqlite_values(&params);
                 let mut rows = stmt.query(rusqlite::params_from_iter(values.iter()))?;
                 let mut out = Vec::new();
@@ -824,7 +824,7 @@ impl Db {
             }
             Some(url) if !url.trim().is_empty() => {
                 anyhow::bail!(
-                    "KAGI_DATABASE_URL must start with postgres:// or postgresql:// (got {url})"
+                    "KAGI_DATABASE_URL must start with postgres:// or postgresql://"
                 )
             }
             _ => Self::open_sqlite(path),
@@ -849,7 +849,9 @@ impl Db {
     }
 
     fn open_postgres(url: &str, auto_migrate: bool) -> anyhow::Result<Self> {
-        let mut config: postgres::Config = url.parse().context("parsing KAGI_DATABASE_URL")?;
+        let mut config: postgres::Config = url.parse().map_err(|_| {
+            anyhow::anyhow!("parsing KAGI_DATABASE_URL failed; check the URL syntax")
+        })?;
         // Identity data and signing keys must never travel over plaintext TCP.
         // Require TLS even if the supplied URL omitted sslmode=require.
         config.ssl_mode(postgres::config::SslMode::Require);
@@ -1622,5 +1624,31 @@ mod schema_regression_tests {
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS session_id"));
         assert!(schema.contains("CREATE TABLE IF NOT EXISTS audit_events"));
         assert!(schema.contains("CREATE TABLE IF NOT EXISTS recovery_codes"));
+    }
+
+    #[test]
+    fn invalid_database_url_error_does_not_disclose_credentials() {
+        let supplied = "mysql://service-user:very-secret-password@db.example.invalid/identity";
+        let error = super::Db::open_with_options(Some(supplied), ":memory:", false)
+            .err()
+            .expect("an unsupported database scheme must be rejected");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("KAGI_DATABASE_URL"));
+        assert!(!message.contains("very-secret-password"));
+        assert!(!message.contains("service-user"));
+    }
+
+    #[test]
+    fn malformed_postgres_url_error_does_not_disclose_credentials() {
+        let supplied = "postgresql://service-user:very-secret-password@db.example.invalid:not-a-port/identity";
+        let error = super::Db::open_with_options(Some(supplied), ":memory:", false)
+            .err()
+            .expect("a malformed PostgreSQL URL must be rejected");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("KAGI_DATABASE_URL"));
+        assert!(!message.contains("very-secret-password"));
+        assert!(!message.contains("service-user"));
     }
 }

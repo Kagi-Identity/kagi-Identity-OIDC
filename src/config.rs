@@ -18,6 +18,8 @@ pub struct Config {
     pub database_url: Option<String>,
     /// Apply schema migrations at process startup (disable for serverless production).
     pub auto_migrate: bool,
+    /// Fail closed on production-only security prerequisites.
+    pub production: bool,
     pub allow_signup: bool,
     pub seed_demo: bool,
     pub require_par: bool,
@@ -80,7 +82,7 @@ fn non_empty(name: &str) -> Option<String> {
 fn validate_origin(origin: &str) -> anyhow::Result<()> {
     let uri = origin
         .parse::<axum::http::Uri>()
-        .map_err(|_| anyhow::anyhow!("KAGI_ORIGIN must be a valid absolute URL"))?;
+        .map_err(|_| anyhow::anyhow!("origin must be a valid absolute URL"))?;
 
     anyhow::ensure!(
         matches!(uri.scheme_str(), Some("http" | "https")),
@@ -92,7 +94,11 @@ fn validate_origin(origin: &str) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("KAGI_ORIGIN must include a host"))?;
     anyhow::ensure!(
         !authority.as_str().contains('@'),
-        "KAGI_ORIGIN must not contain credentials"
+        "origin must not contain credentials"
+    );
+    anyhow::ensure!(
+        !authority.as_str().contains('*'),
+        "origin must not contain wildcard hosts"
     );
 
     let path_and_query = uri
@@ -107,18 +113,38 @@ fn validate_origin(origin: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// CORS uses serialized origins, not arbitrary URLs. Only exact HTTPS origins
+/// are accepted so path, credential, wildcard, and downgrade mistakes fail
+/// during startup instead of silently producing a broken or permissive policy.
+fn validate_https_origin(origin: &str) -> anyhow::Result<()> {
+    validate_origin(origin)?;
+    anyhow::ensure!(
+        origin.starts_with("https://"),
+        "CORS origins must use https://"
+    );
+    Ok(())
+}
+
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let issuer = non_empty("KAGI_ISSUER").unwrap_or_else(|| "http://localhost:8080".to_string());
         let issuer = issuer.trim_end_matches('/').to_string();
+        validate_origin(&issuer).map_err(|_| {
+            anyhow::anyhow!("KAGI_ISSUER must be an absolute HTTP(S) origin without a path")
+        })?;
+
+        let environment = non_empty("KAGI_ENV").unwrap_or_else(|| {
+            if env::var("VERCEL").as_deref() == Ok("1") {
+                "production".to_string()
+            } else {
+                "development".to_string()
+            }
+        });
         anyhow::ensure!(
-            issuer.starts_with("https://") || issuer.starts_with("http://"),
-            "KAGI_ISSUER must start with http:// or https://"
+            matches!(environment.as_str(), "development" | "test" | "production"),
+            "KAGI_ENV must be development, test, or production"
         );
-        anyhow::ensure!(
-            !issuer.contains('?') && !issuer.contains('#'),
-            "KAGI_ISSUER must not contain a query or fragment"
-        );
+        let production = environment == "production";
 
         let secure_default = issuer.starts_with("https://");
 
@@ -158,23 +184,28 @@ impl Config {
         let id_ttl = num("KAGI_ID_TTL", 300);
         let par_ttl = num("KAGI_PAR_TTL", 90);
         let cors_origins: Vec<String> = non_empty("KAGI_CORS_ORIGINS")
-            .map(|raw| raw.split(',').map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).collect())
+            .map(|raw| {
+                raw.split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.trim_end_matches('/').to_string())
+                    .collect()
+            })
             .unwrap_or_default();
         for origin in &cors_origins {
-            let host = origin.strip_prefix("https://").unwrap_or("");
-            anyhow::ensure!(
-                !host.is_empty()
-                    && !host.contains('/')
-                    && !host.contains('@')
-                    && !host.contains(' ')
-                    && !origin.contains('*'),
-                "KAGI_CORS_ORIGINS must contain exact HTTPS origins without paths, credentials, or wildcards"
-            );
-            anyhow::ensure!(
-                !origin.contains('?') && !origin.contains('#'),
-                "KAGI_CORS_ORIGINS entries must not contain query strings or fragments"
-            );
+            validate_https_origin(origin).map_err(|_| {
+                anyhow::anyhow!(
+                    "KAGI_CORS_ORIGINS must contain exact HTTPS origins without paths or credentials"
+                )
+            })?;
         }
+        let mut unique_origins = cors_origins.clone();
+        unique_origins.sort();
+        unique_origins.dedup();
+        anyhow::ensure!(
+            unique_origins.len() == cors_origins.len(),
+            "KAGI_CORS_ORIGINS must not contain duplicate origins"
+        );
 
         for (name, value) in [
             ("KAGI_SESSION_TTL", session_ttl),
@@ -197,6 +228,7 @@ impl Config {
             db_path: non_empty("KAGI_DB").unwrap_or_else(|| "kagi.db".to_string()),
             database_url: non_empty("KAGI_DATABASE_URL").or_else(|| non_empty("DATABASE_URL")),
             auto_migrate: flag("KAGI_AUTO_MIGRATE", true),
+            production,
             allow_signup: flag("KAGI_ALLOW_SIGNUP", true),
             seed_demo: flag("KAGI_SEED_DEMO", false),
             require_par: flag("KAGI_REQUIRE_PAR", false),
@@ -234,18 +266,28 @@ impl Config {
     }
 
     pub fn is_local(&self) -> bool {
-        let host = self
-            .issuer
-            .split("://")
-            .nth(1)
-            .unwrap_or("")
-            .split('/')
-            .next()
-            .unwrap_or("")
-            .split(':')
-            .next()
-            .unwrap_or("");
-        matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
+        let Ok(uri) = self.issuer.parse::<axum::http::Uri>() else {
+            return true;
+        };
+        let Some(authority) = uri.authority() else {
+            return true;
+        };
+        let authority = authority.as_str();
+        let host = if authority.starts_with('[') {
+            authority
+                .split(']')
+                .next()
+                .unwrap_or("")
+                .trim_start_matches('[')
+        } else {
+            authority.split(':').next().unwrap_or(authority)
+        };
+        let host_lower = host.to_ascii_lowercase();
+        host_lower == "localhost"
+            || host_lower.ends_with(".localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
     }
 
     /// Human-readable warnings printed at start-up. These do not block boot:
@@ -305,6 +347,73 @@ mod origin_tests {
             "/relative/path",
         ] {
             assert!(validate_origin(value).is_err(), "accepted invalid origin: {value}");
+        }
+    }
+
+    #[test]
+    fn detects_all_loopback_and_unspecified_address_families() {
+        for host in ["localhost", "login.localhost", "127.0.0.1", "127.42.1.9", "::1", "0.0.0.0", "::"] {
+            let issuer = if host.contains(':') {
+                format!("https://[{host}]")
+            } else {
+                format!("https://{host}")
+            };
+            let config = super::Config {
+                issuer,
+                bind: "127.0.0.1:8080".to_string(),
+                rp_id: "localhost".to_string(),
+                rp_name: "test".to_string(),
+                origin: "https://localhost".to_string(),
+                db_path: ":memory:".to_string(),
+                database_url: None,
+                auto_migrate: true,
+                production: false,
+                allow_signup: true,
+                seed_demo: false,
+                require_par: false,
+                require_dpop: false,
+                admin_token: None,
+                registration_token: None,
+                cors_origins: Vec::new(),
+                cookie_secure: false,
+                hsts: false,
+                trust_proxy: false,
+                rate_limit: true,
+                recovery_enabled: true,
+                max_passkeys: 10,
+                audit_retention_days: 90,
+                session_ttl: 3600,
+                session_idle_ttl: 1800,
+                code_ttl: 60,
+                access_ttl: 300,
+                refresh_ttl: 3600,
+                id_ttl: 300,
+                par_ttl: 90,
+            };
+            assert!(config.is_local(), "did not detect local issuer host: {host}");
+        }
+    }
+
+    #[test]
+    fn cors_requires_an_exact_https_origin() {
+        for value in [
+            "https://app.example.com",
+            "https://app.example.com:8443",
+        ] {
+            assert!(super::validate_https_origin(value).is_ok());
+        }
+
+        for value in [
+            "http://app.example.com",
+            "https://app.example.com/path",
+            "https://user:password@app.example.com",
+            "https://*.example.com",
+            "https://app.example.com?next=/",
+        ] {
+            assert!(
+                super::validate_https_origin(value).is_err(),
+                "accepted invalid CORS origin: {value}"
+            );
         }
     }
 }

@@ -34,34 +34,73 @@ pub struct AppState {
     pub last_key_refresh: Arc<AtomicI64>,
 }
 
+fn is_usable_production_secret(secret: Option<&String>) -> bool {
+    secret.is_some_and(|value| {
+        let upper = value.to_ascii_uppercase();
+        value.len() >= 32
+            && !upper.contains("REPLACE_WITH")
+            && !upper.contains("CHANGE_ME")
+            && !upper.contains("PLACEHOLDER")
+            && !upper.contains("YOUR_SECRET")
+    })
+}
+
+/// Enforce the same fail-closed baseline for self-hosted and serverless
+/// production deployments. Vercel is always production, even if KAGI_ENV is
+/// accidentally set to a weaker value.
+fn validate_production_config(cfg: &Config, is_vercel: bool) -> anyhow::Result<()> {
+    if !cfg.production && !is_vercel {
+        return Ok(());
+    }
+
+    anyhow::ensure!(
+        cfg.database_url
+            .as_deref()
+            .is_some_and(|url| url.starts_with("postgres://") || url.starts_with("postgresql://")),
+        "production requires KAGI_DATABASE_URL (PostgreSQL); SQLite is not supported"
+    );
+    anyhow::ensure!(cfg.issuer.starts_with("https://"), "production requires an HTTPS KAGI_ISSUER");
+    anyhow::ensure!(!cfg.is_local(), "production KAGI_ISSUER must not use localhost or a loopback address");
+    anyhow::ensure!(
+        cfg.origin == cfg.issuer,
+        "KAGI_ORIGIN must exactly match KAGI_ISSUER for this deployment"
+    );
+    anyhow::ensure!(cfg.cookie_secure, "KAGI_COOKIE_SECURE=1 is required in production");
+    anyhow::ensure!(cfg.hsts, "KAGI_HSTS=1 is required in production");
+    anyhow::ensure!(!cfg.seed_demo, "KAGI_SEED_DEMO must be disabled in production");
+    anyhow::ensure!(cfg.require_par, "KAGI_REQUIRE_PAR=1 is required in production");
+    anyhow::ensure!(cfg.trust_proxy, "KAGI_TRUST_PROXY=1 is required behind the trusted HTTPS proxy");
+    anyhow::ensure!(!cfg.auto_migrate, "KAGI_AUTO_MIGRATE=0 is required; apply the database schema before deployment");
+    anyhow::ensure!(cfg.rate_limit, "KAGI_RATE_LIMIT=1 is required in production");
+    anyhow::ensure!(
+        is_usable_production_secret(cfg.admin_token.as_ref()),
+        "KAGI_ADMIN_TOKEN must be a unique, randomly generated secret of at least 32 characters"
+    );
+    anyhow::ensure!(
+        is_usable_production_secret(cfg.registration_token.as_ref()),
+        "KAGI_REGISTRATION_TOKEN must be a unique, randomly generated secret of at least 32 characters"
+    );
+    anyhow::ensure!(
+        cfg.admin_token != cfg.registration_token,
+        "KAGI_ADMIN_TOKEN and KAGI_REGISTRATION_TOKEN must be different secrets"
+    );
+
+    if is_vercel {
+        anyhow::ensure!(
+            !cfg.cors_origins.is_empty(),
+            "KAGI_CORS_ORIGINS must list exact HTTPS RP origins on Vercel"
+        );
+    }
+    Ok(())
+}
+
 /// Initialize state once per process/function instance. All durable state,
 /// including signing keys, sessions and OAuth artifacts, lives in PostgreSQL.
 pub fn build_state() -> anyhow::Result<AppState> {
     let cfg = Arc::new(Config::from_env()?);
-    if std::env::var("VERCEL").as_deref() == Ok("1") {
-        anyhow::ensure!(
-            cfg.database_url.as_deref().is_some_and(|u| u.starts_with("postgres://") || u.starts_with("postgresql://")),
-            "Vercel production requires KAGI_DATABASE_URL (PostgreSQL); ephemeral SQLite is not supported"
-        );
-        anyhow::ensure!(cfg.issuer.starts_with("https://"), "Vercel requires an HTTPS KAGI_ISSUER");
-        anyhow::ensure!(cfg.origin == cfg.issuer, "KAGI_ORIGIN must exactly match KAGI_ISSUER for this deployment");
-        anyhow::ensure!(cfg.cookie_secure, "KAGI_COOKIE_SECURE=1 is required on Vercel");
-        anyhow::ensure!(cfg.hsts, "KAGI_HSTS=1 is required on Vercel");
-        anyhow::ensure!(!cfg.seed_demo, "KAGI_SEED_DEMO must be disabled on Vercel");
-        anyhow::ensure!(cfg.require_par, "KAGI_REQUIRE_PAR=1 is required on Vercel");
-        anyhow::ensure!(cfg.trust_proxy, "KAGI_TRUST_PROXY=1 is required behind the Vercel proxy");
-        anyhow::ensure!(!cfg.auto_migrate, "KAGI_AUTO_MIGRATE=0 is required; apply database schema before deployment");
-        anyhow::ensure!(cfg.rate_limit, "KAGI_RATE_LIMIT=1 is required in production");
-        anyhow::ensure!(!cfg.cors_origins.is_empty(), "KAGI_CORS_ORIGINS must list exact HTTPS RP origins on Vercel");
-        anyhow::ensure!(
-            cfg.admin_token.as_ref().is_some_and(|v| v.len() >= 32),
-            "KAGI_ADMIN_TOKEN must be a randomly generated secret of at least 32 characters"
-        );
-        anyhow::ensure!(
-            cfg.registration_token.as_ref().is_some_and(|v| v.len() >= 32),
-            "KAGI_REGISTRATION_TOKEN must be a randomly generated secret of at least 32 characters"
-        );
-    }
+    let is_vercel = std::env::var("VERCEL").as_deref() == Ok("1");
+    validate_production_config(&cfg, is_vercel)?;
+
 
     let db = Arc::new(Db::open_with_options(cfg.database_url.as_deref(), &cfg.db_path, cfg.auto_migrate)?);
     if cfg.seed_demo {
@@ -318,7 +357,12 @@ async fn not_found() -> Response {
 
 pub async fn run_local() -> anyhow::Result<()> {
     let cfg = Arc::new(Config::from_env()?);
-    let db = Arc::new(Db::open(cfg.database_url.as_deref(), &cfg.db_path)?);
+    validate_production_config(&cfg, false)?;
+    let db = Arc::new(Db::open_with_options(
+        cfg.database_url.as_deref(),
+        &cfg.db_path,
+        cfg.auto_migrate,
+    )?);
     if cfg.seed_demo {
         anyhow::ensure!(cfg.is_local(), "demo client seeding is only allowed for localhost");
         db.with(|c| db::seed_demo_client(c))?;
@@ -344,3 +388,76 @@ pub async fn run_local() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod production_config_tests {
+    use super::{is_usable_production_secret, validate_production_config};
+    use crate::config::Config;
+
+    fn valid_production_config() -> Config {
+        Config {
+            issuer: "https://identity.example.com".to_string(),
+            bind: "0.0.0.0:8080".to_string(),
+            rp_id: "identity.example.com".to_string(),
+            rp_name: "Example Identity".to_string(),
+            origin: "https://identity.example.com".to_string(),
+            db_path: "/data/kagi.db".to_string(),
+            database_url: Some(
+                "postgresql://kagi:unused-password@db.example.com:5432/kagi?sslmode=require"
+                    .to_string(),
+            ),
+            auto_migrate: false,
+            production: true,
+            allow_signup: false,
+            seed_demo: false,
+            require_par: true,
+            require_dpop: true,
+            admin_token: Some("A".repeat(48)),
+            registration_token: Some("B".repeat(48)),
+            cors_origins: vec!["https://app.example.com".to_string()],
+            cookie_secure: true,
+            hsts: true,
+            trust_proxy: true,
+            rate_limit: true,
+            recovery_enabled: true,
+            max_passkeys: 10,
+            audit_retention_days: 90,
+            session_ttl: 28_800,
+            session_idle_ttl: 7_200,
+            code_ttl: 60,
+            access_ttl: 300,
+            refresh_ttl: 2_592_000,
+            id_ttl: 300,
+            par_ttl: 90,
+        }
+    }
+
+    #[test]
+    fn production_configuration_passes_with_all_required_guardrails() {
+        assert!(validate_production_config(&valid_production_config(), false).is_ok());
+    }
+
+    #[test]
+    fn production_rejects_missing_or_placeholder_secrets() {
+        let mut config = valid_production_config();
+        config.admin_token = Some("REPLACE_WITH_A_RANDOM_SECRET_OF_AT_LEAST_32_CHARACTERS".to_string());
+        assert!(validate_production_config(&config, false).is_err());
+        assert!(!is_usable_production_secret(config.admin_token.as_ref()));
+    }
+
+    #[test]
+    fn production_requires_distinct_administration_and_registration_secrets() {
+        let mut config = valid_production_config();
+        config.registration_token = config.admin_token.clone();
+        assert!(validate_production_config(&config, false).is_err());
+    }
+
+    #[test]
+    fn vercel_requires_a_non_empty_exact_cors_allowlist() {
+        let mut config = valid_production_config();
+        config.cors_origins.clear();
+        assert!(validate_production_config(&config, false).is_ok());
+        assert!(validate_production_config(&config, true).is_err());
+    }
+}
+
