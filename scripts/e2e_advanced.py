@@ -120,7 +120,7 @@ kA, jwkA, jktA = mkkey()
 kB, jwkB, jktB = mkkey()
 authz2 = {**authz, "state": "dpop-state", "response_mode": "query", "dpop_jkt": jktA, "prompt": "none"}
 r = S.post(BASE + "/par", data=authz2, headers={"DPoP": proof(kA, jwkA, "POST", BASE + "/par")})
-check("PAR DPoP", r.status_code == 200, r.text)
+check("PAR DPoP", r.status_code == 201, r.text)
 ru2 = r.json()["request_uri"]
 r = authorize(ru2)
 loc = r.headers.get("Location", "")
@@ -143,8 +143,8 @@ check("code bound to key A accepts key A", r.status_code == 200 and r.json().get
 r = requests.options(BASE + "/token", headers={"Origin": "https://rp.example",
                                               "Access-Control-Request-Method": "POST",
                                               "Access-Control-Request-Headers": "dpop"})
-check("CORS preflight", r.status_code == 204 and r.headers.get("access-control-allow-origin") == "*"
-      and "dpop" in r.headers.get("access-control-allow-headers", ""), dict(r.headers))
+check("CORS preflight", r.status_code == 204 and r.headers.get("access-control-allow-origin") in ("*", "https://rp.example")
+      and "dpop" in r.headers.get("access-control-allow-headers", "") and "Origin" in r.headers.get("vary", ""), dict(r.headers))
 
 # ---------------- max_age ----------------
 authz3 = {**authz, "state": "maxage", "response_mode": "query", "max_age": "0"}
