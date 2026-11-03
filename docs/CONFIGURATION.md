@@ -25,7 +25,7 @@ All values are read when the process starts. Restart Kagi Identity after changin
 | `KAGI_SEED_DEMO` | `0` | Seed the development `demo-web` client |
 | `KAGI_REQUIRE_PAR` | `0` | Require Pushed Authorization Requests |
 | `KAGI_REQUIRE_DPOP` | `0` | Require DPoP for applicable flows |
-| `KAGI_ADMIN_TOKEN` | Unset | Bearer token protecting administrative key rotation; unset disables endpoint |
+| `KAGI_ADMIN_TOKEN` | Unset | Bearer token protecting the administrative endpoints (`/admin/keys/rotate`, `/admin/stats`); unset disables them |
 | `KAGI_REGISTRATION_TOKEN` | Unset | Initial access token required for dynamic client registration |
 | `KAGI_CORS_ORIGINS` | Unset | Comma-separated exact HTTPS origins allowed to call API endpoints |
 | `KAGI_COOKIE_SECURE` | Derived from HTTPS issuer | Add the Secure attribute to cookies |
