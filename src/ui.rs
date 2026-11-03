@@ -1,7 +1,7 @@
 //! Server-rendered HTML. No template engine: these are small, auditable pages
 //! and every interpolation goes through `esc`.
 
-use crate::db::{Credential, User};
+use crate::db::{AuditEvent, Consent, Credential, Session, User};
 use crate::oidc::split_scope;
 use crate::util::esc;
 use serde_json::Value;
@@ -40,8 +40,15 @@ fn config_script(value: &Value) -> String {
     format!(r#"<script type="application/json" id="kagi-config">{safe}</script>"#)
 }
 
+fn brand_svg() -> &'static str {
+    r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2m-3 3 3 3m-6 0 2 2"/></svg>"#
+}
+
 fn brand() -> String {
-    r#"<div class="brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2m-3 3 3 3m-6 0 2 2"/></svg><span>Kagi Identity</span></div>"#.to_string()
+    format!(
+        r#"<div class="brand">{}<span>Kagi Identity</span></div>"#,
+        brand_svg()
+    )
 }
 
 pub fn error_page(code: &str, message: &str) -> String {
@@ -83,11 +90,16 @@ pub fn login_page(rid: &str, csrf: &str) -> String {
   <span class="label">パスキーで続行</span>
 </button>
 <p class="msg" id="msg" role="status" aria-live="polite"></p>
-<p class="foot">アカウントをお持ちでない方は <a href="/signup{signup_q}">新規登録</a></p>
+<p class="foot">アカウントをお持ちでない方は <a href="/signup{signup_q}">新規登録</a><br>パスキーが使えない場合は <a href="/recover{recover_q}">リカバリーコード</a></p>
 {config}
 </section>"#,
             brand = brand(),
             signup_q = if rid.is_empty() {
+                String::new()
+            } else {
+                format!("?rid={}", crate::util::urlenc(rid))
+            },
+            recover_q = if rid.is_empty() {
                 String::new()
             } else {
                 format!("?rid={}", crate::util::urlenc(rid))
@@ -151,7 +163,10 @@ pub fn consent_page(
             let (title, detail) = match s.as_str() {
                 "profile" => ("プロフィール", "表示名とユーザー名を共有します"),
                 "email" => ("メールアドレス", "メールアドレスと確認状態を共有します"),
-                "offline_access" => ("オフラインアクセス", "サインインしていない間も更新トークンでアクセスできます"),
+                "offline_access" => (
+                    "オフラインアクセス",
+                    "サインインしていない間も更新トークンでアクセスできます",
+                ),
                 other => ("追加の権限", other),
             };
             format!(
@@ -196,51 +211,427 @@ pub fn consent_page(
     )
 }
 
-pub fn account_page(user: &User, creds: &[Credential]) -> String {
-    let config = config_script(&serde_json::json!({ "flow": "account" }));
-    let items = if creds.is_empty() {
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (y + if m <= 2 { 1 } else { 0 }, m, d)
+}
+
+/// Compact UTC timestamp. kagi deliberately avoids a date-time dependency:
+/// this single function covers the console's needs.
+fn fmt_datetime(ts: i64) -> String {
+    if ts <= 0 {
+        return "—".to_string();
+    }
+    let days = ts.div_euclid(86_400);
+    let secs = ts.rem_euclid(86_400);
+    let (y, m, d) = civil_from_days(days);
+    format!(
+        "{y}/{m:02}/{d:02} {:02}:{:02} UTC",
+        secs / 3_600,
+        (secs % 3_600) / 60
+    )
+}
+
+fn fmt_ago(ts: i64) -> String {
+    if ts <= 0 {
+        return "—".to_string();
+    }
+    let diff = crate::util::now() - ts;
+    if diff < 60 {
+        "たった今".to_string()
+    } else if diff < 3_600 {
+        format!("{}分前", diff / 60)
+    } else if diff < 86_400 {
+        format!("{}時間前", diff / 3_600)
+    } else if diff < 2_592_000 {
+        format!("{}日前", diff / 86_400)
+    } else {
+        fmt_datetime(ts)
+    }
+}
+
+fn device_label(user_agent: Option<&str>) -> String {
+    let Some(ua) = user_agent.filter(|s| !s.is_empty()) else {
+        return "不明なデバイス".to_string();
+    };
+    let browser = if ua.contains("Edg/") {
+        "Edge"
+    } else if ua.contains("OPR/") {
+        "Opera"
+    } else if ua.contains("Chrome/") {
+        "Chrome"
+    } else if ua.contains("Firefox/") {
+        "Firefox"
+    } else if ua.contains("Safari/") {
+        "Safari"
+    } else {
+        "ブラウザ"
+    };
+    let os = if ua.contains("Windows") {
+        "Windows"
+    } else if ua.contains("iPhone") || ua.contains("iPad") {
+        "iOS"
+    } else if ua.contains("Android") {
+        "Android"
+    } else if ua.contains("Mac OS X") {
+        "macOS"
+    } else if ua.contains("Linux") {
+        "Linux"
+    } else {
+        ""
+    };
+    if os.is_empty() {
+        browser.to_string()
+    } else {
+        format!("{browser} · {os}")
+    }
+}
+
+fn event_label(kind: &str) -> &'static str {
+    match kind {
+        "auth.login" => "サインイン",
+        "auth.logout" => "サインアウト",
+        "auth.signup" => "アカウント作成",
+        "auth.login_failed" => "サインイン失敗",
+        "passkey.add" => "パスキー追加",
+        "passkey.rename" => "パスキー名変更",
+        "passkey.delete" => "パスキー削除",
+        "session.revoke" => "セッション終了",
+        "session.revoke_others" => "他のデバイスをサインアウト",
+        "consent.grant" => "アクセス許可",
+        "consent.deny" => "アクセス拒否",
+        "consent.revoke" => "アクセス取り消し",
+        "profile.update" => "プロフィール更新",
+        "recovery.generate" => "リカバリーコード生成",
+        "recovery.use" => "リカバリーコード使用",
+        "recovery.failed" => "リカバリー失敗",
+        "account.delete" => "アカウント削除",
+        _ => "セキュリティイベント",
+    }
+}
+
+/// Render the signed-in account console. The arguments are the page's data
+/// sources; they are grouped here because every section is rendered together.
+#[allow(clippy::too_many_arguments)]
+pub fn account_page(
+    user: &User,
+    creds: &[Credential],
+    sessions: &[Session],
+    current_sid: &str,
+    consents: &[Consent],
+    events: &[AuditEvent],
+    recovery_count: i64,
+    recovery_enabled: bool,
+) -> String {
+    let config = config_script(&serde_json::json!({
+        "flow": "account",
+        "username": user.username,
+        "recovery": recovery_enabled,
+    }));
+
+    let can_delete_passkey = creds.len() > 1;
+    let passkeys = if creds.is_empty() {
         r#"<li class="empty">パスキーが登録されていません</li>"#.to_string()
     } else {
         creds
             .iter()
             .map(|c| {
-                let short: String = c.id.chars().take(10).collect();
+                let name = c.name.as_deref().unwrap_or("パスキー");
+                let short: String = c.id.chars().take(12).collect();
                 let synced = if c.backup_eligible {
-                    r#"<span class="badge">同期対応</span>"#
+                    r#"<span class="tag">同期対応</span>"#
                 } else {
-                    r#"<span class="badge plain">この端末のみ</span>"#
+                    r#"<span class="tag">この端末のみ</span>"#
+                };
+                let remove = if can_delete_passkey {
+                    format!(
+                        r#"<button class="mini danger" type="button" data-action="delete-passkey" data-id="{id}">削除</button>"#,
+                        id = esc(&c.id)
+                    )
+                } else {
+                    String::new()
                 };
                 format!(
-                    r#"<li class="cred"><div><div class="cred-name">{name}</div><div class="cred-id">{short}…</div></div>{synced}</li>"#,
-                    name = esc(c.name.as_deref().unwrap_or("パスキー")),
+                    r#"<li class="item">
+  <div class="item-main">
+    <div class="item-title">{name} {synced}</div>
+    <div class="item-sub">{created} に追加 · {short}…</div>
+  </div>
+  <div class="item-actions">
+    <button class="mini" type="button" data-action="rename-passkey" data-id="{id}" data-name="{attr}">名前変更</button>
+    {remove}
+  </div>
+</li>"#,
+                    name = esc(name),
+                    synced = synced,
+                    created = esc(&fmt_datetime(c.created_at)),
                     short = esc(&short),
-                    synced = synced
+                    id = esc(&c.id),
+                    attr = esc(name),
+                    remove = remove,
                 )
             })
             .collect::<String>()
     };
 
+    let session_items = if sessions.is_empty() {
+        r#"<li class="empty">サインイン中のデバイスはありません</li>"#.to_string()
+    } else {
+        sessions
+            .iter()
+            .map(|s| {
+                let current = s.id == current_sid;
+                let badge = if current {
+                    r#"<span class="tag solid">このデバイス</span>"#
+                } else {
+                    ""
+                };
+                let ip = s.ip.as_deref().filter(|v| !v.is_empty()).unwrap_or("—");
+                format!(
+                    r#"<li class="item">
+  <div class="item-main">
+    <div class="item-title">{device} {badge}</div>
+    <div class="item-sub">{ip} · 最終利用 {seen}</div>
+  </div>
+  <div class="item-actions">
+    <button class="mini" type="button" data-action="revoke-session" data-id="{id}">{label}</button>
+  </div>
+</li>"#,
+                    device = esc(&device_label(s.user_agent.as_deref())),
+                    badge = badge,
+                    ip = esc(ip),
+                    seen = esc(&fmt_ago(s.last_seen_at)),
+                    id = esc(&s.id),
+                    label = if current {
+                        "サインアウト"
+                    } else {
+                        "終了"
+                    },
+                )
+            })
+            .collect::<String>()
+    };
+
+    let consent_items = if consents.is_empty() {
+        r#"<li class="empty">連携中のアプリはありません</li>"#.to_string()
+    } else {
+        consents
+            .iter()
+            .map(|c| {
+                format!(
+                    r#"<li class="item">
+  <div class="item-main">
+    <div class="item-title">{name}</div>
+    <div class="item-sub">{scopes}</div>
+  </div>
+  <div class="item-actions">
+    <button class="mini danger" type="button" data-action="revoke-consent" data-client="{id}">解除</button>
+  </div>
+</li>"#,
+                    name = esc(&c.client_name),
+                    scopes = esc(&split_scope(&c.scope).join(" · ")),
+                    id = esc(&c.client_id),
+                )
+            })
+            .collect::<String>()
+    };
+
+    let event_items = if events.is_empty() {
+        r#"<li class="empty">まだイベントはありません</li>"#.to_string()
+    } else {
+        events
+            .iter()
+            .map(|e| {
+                let ip = e.ip.as_deref().filter(|v| !v.is_empty());
+                let meta = match ip {
+                    Some(ip) => format!("{} · {}", e.detail, ip),
+                    None => e.detail.clone(),
+                };
+                format!(
+                    r#"<li class="event">
+  <span class="dot" aria-hidden="true"></span>
+  <div class="item-main">
+    <div class="item-title">{label} <span class="item-time">{time}</span></div>
+    <div class="item-sub">{meta}</div>
+  </div>
+</li>"#,
+                    label = esc(event_label(&e.kind)),
+                    time = esc(&fmt_ago(e.created_at)),
+                    meta = esc(&meta),
+                )
+            })
+            .collect::<String>()
+    };
+
+    let recovery = if !recovery_enabled {
+        r#"<p class="muted small">このサーバーではリカバリーコードが無効になっています。</p>"#
+            .to_string()
+    } else {
+        let remaining = if recovery_count > 0 {
+            format!(
+                r#"<p class="metric"><strong>{recovery_count}</strong><span>残りのコード</span></p>"#
+            )
+        } else {
+            r#"<p class="metric"><strong>0</strong><span>未生成</span></p>"#.to_string()
+        };
+        format!(
+            r#"<p class="muted small">パスキーが使えなくなったとき、リカバリーコードでサインインできます。コードは一度しか使えません。</p>
+{remaining}
+<button class="ghost small" id="btn-generate-recovery" type="button">新しいコードを生成</button>
+<div id="recovery-output" class="codes" hidden>
+  <p class="small muted">このコードは再表示できません。安全な場所に保管してください。</p>
+  <ol id="recovery-list"></ol>
+  <button class="mini" id="btn-copy-recovery" type="button">コピー</button>
+</div>"#,
+            remaining = remaining,
+        )
+    };
+
+    let initial = user
+        .display_name
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".to_string());
+
     page(
         "アカウント",
         &format!(
-            r#"<section class="card">
-{brand}
-<p class="eyebrow">アカウント</p>
-<h1>{name}</h1>
-<p class="muted">@{username}</p>
-<h2>パスキー</h2>
-<ul class="creds">{items}</ul>
-<button class="primary" id="btn-add-passkey" type="button"><span class="label">パスキーを追加</span></button>
+            r#"<header class="topbar">
+  <a class="brand" href="/">{brand_svg}<span>kagi</span></a>
+  <form method="post" action="/account/logout">
+    <button class="mini" type="submit">サインアウト</button>
+  </form>
+</header>
+
+<section class="account-head">
+  <div class="avatar" aria-hidden="true">{initial}</div>
+  <div>
+    <h1>{name}</h1>
+    <p class="muted">@{username} ・ {created} から利用</p>
+  </div>
+</section>
+
 <p class="msg" id="msg" role="status" aria-live="polite"></p>
-<form method="post" action="/account/logout" class="foot-form">
-  <button class="link" type="submit">サインアウト</button>
+
+<div class="grid">
+  <section class="panel">
+    <div class="panel-head"><h2>プロフィール</h2></div>
+    <form id="profile-form" class="stack" autocomplete="off">
+      <label class="field">
+        <span>表示名</span>
+        <input id="profile-display-name" name="display_name" value="{name}" maxlength="80" required>
+      </label>
+      <label class="field">
+        <span>メールアドレス <em>任意</em></span>
+        <input id="profile-email" name="email" type="email" value="{email}" placeholder="you@example.com">
+      </label>
+      <button class="primary small" type="submit"><span class="label">保存</span></button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>パスキー</h2>
+      <span class="count">{passkey_count}</span>
+    </div>
+    <ul class="list">{passkeys}</ul>
+    <button class="ghost small" id="btn-add-passkey" type="button">パスキーを追加</button>
+  </section>
+
+  <section class="panel wide">
+    <div class="panel-head">
+      <h2>サインイン中のデバイス</h2>
+      <span class="count">{session_count}</span>
+    </div>
+    <ul class="list">{session_items}</ul>
+    <button class="ghost small" id="btn-revoke-others" type="button">他のデバイスをすべてサインアウト</button>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>連携アプリ</h2></div>
+    <ul class="list">{consent_items}</ul>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>リカバリーコード</h2></div>
+    {recovery}
+  </section>
+
+  <section class="panel wide">
+    <div class="panel-head"><h2>最近のセキュリティイベント</h2></div>
+    <ul class="timeline">{event_items}</ul>
+  </section>
+
+  <section class="panel wide danger-zone">
+    <div class="panel-head"><h2>アカウント削除</h2></div>
+    <p class="muted small">アカウントを削除すると、パスキー・セッション・連携情報がすべて削除されます。この操作は取り消せません。</p>
+    <form id="delete-form" autocomplete="off">
+      <label class="field">
+        <span>確認のため <code>{username}</code> と入力してください</span>
+        <input id="confirm-username" name="confirm_username" autocomplete="off" required>
+      </label>
+      <button class="danger-btn" type="submit">アカウントを完全に削除</button>
+    </form>
+  </section>
+</div>
+{config}"#,
+            brand_svg = brand_svg(),
+            initial = esc(&initial),
+            name = esc(&user.display_name),
+            username = esc(&user.username),
+            created = esc(&fmt_datetime(user.created_at)),
+            email = esc(user.email.as_deref().unwrap_or("")),
+            passkey_count = creds.len(),
+            passkeys = passkeys,
+            session_count = sessions.len(),
+            session_items = session_items,
+            consent_items = consent_items,
+            recovery = recovery,
+            event_items = event_items,
+            config = config,
+        ),
+    )
+}
+
+/// Recovery-code sign-in. Used only when the operator enabled recovery codes.
+pub fn recover_page(rid: Option<&str>) -> String {
+    let config = config_script(&serde_json::json!({
+        "flow": "recover",
+        "rid": rid,
+    }));
+    page(
+        "リカバリー",
+        &format!(
+            r#"<section class="card narrow">
+{brand}
+<p class="eyebrow">リカバリー</p>
+<h1>コードでサインイン</h1>
+<p class="muted">パスキーが使えないとき、保存しておいたリカバリーコードでサインインできます。コードは一度だけ使えます。</p>
+<form id="recover-form" autocomplete="off">
+  <label class="field">
+    <span>ユーザー名</span>
+    <input id="recover-username" name="username" autocomplete="username" placeholder="alice" autofocus required>
+  </label>
+  <label class="field">
+    <span>リカバリーコード</span>
+    <input id="recover-code" name="code" autocomplete="one-time-code" placeholder="ABCDE-FGHJK" required>
+  </label>
+  <button class="primary" id="btn-recover" type="submit"><span class="label">サインイン</span></button>
 </form>
+<p class="msg" id="msg" role="status" aria-live="polite"></p>
+<p class="foot"><a href="/login">パスキーでサインイン</a></p>
 {config}
 </section>"#,
             brand = brand(),
-            name = esc(&user.display_name),
-            username = esc(&user.username),
-            items = items,
             config = config
         ),
     )
