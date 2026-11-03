@@ -52,8 +52,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     amr         TEXT NOT NULL,
     acr         TEXT NOT NULL,
     expires_at  BIGINT NOT NULL,
-    created_at  BIGINT NOT NULL
+    created_at  BIGINT NOT NULL,
+    last_seen_at BIGINT NOT NULL DEFAULT 0,
+    user_agent  TEXT,
+    ip          TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
 -- Remembered user consent so that prompt=none can complete silently.
 CREATE TABLE IF NOT EXISTS consents (
@@ -124,12 +128,36 @@ CREATE TABLE IF NOT EXISTS access_tokens (
     scope       TEXT NOT NULL,
     audience    TEXT NOT NULL,
     dpop_jkt    TEXT,
+    session_id  TEXT,                          -- browser session that authorised it
     subject     TEXT NOT NULL,                 -- sub claim (user id or client id)
     issued_at   BIGINT NOT NULL,
     expires_at  BIGINT NOT NULL,
     revoked     BIGINT NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_at_user ON access_tokens(user_id);
+
+-- Security events shown in the account console.
+CREATE TABLE IF NOT EXISTS audit_events (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT,
+    client_id   TEXT,
+    kind        TEXT NOT NULL,
+    detail      TEXT NOT NULL,
+    ip          TEXT,
+    user_agent  TEXT,
+    created_at  BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_events(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at);
+
+-- Single-use recovery codes. Only the SHA-256 of the normalised code is stored.
+CREATE TABLE IF NOT EXISTS recovery_codes (
+    code_hash   TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at  BIGINT NOT NULL,
+    used_at     BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_user ON recovery_codes(user_id);
 
 CREATE TABLE IF NOT EXISTS signing_keys (
     kid         TEXT PRIMARY KEY,
@@ -159,28 +187,7 @@ ALTER TABLE access_tokens ADD COLUMN IF NOT EXISTS session_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_at_session ON access_tokens(session_id);
 
--- Security event history and one-time recovery codes are used by the
--- application and must exist on PostgreSQL just as they do on SQLite.
-CREATE TABLE IF NOT EXISTS audit_events (
-    id          TEXT PRIMARY KEY,
-    user_id     TEXT,
-    client_id   TEXT,
-    kind        TEXT NOT NULL,
-    detail      TEXT,
-    ip          TEXT,
-    user_agent  TEXT,
-    created_at  BIGINT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_events(user_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at);
-
-CREATE TABLE IF NOT EXISTS recovery_codes (
-    code_hash   TEXT PRIMARY KEY,
-    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at  BIGINT NOT NULL,
-    used_at     BIGINT
-);
-CREATE INDEX IF NOT EXISTS idx_recovery_user ON recovery_codes(user_id);
+UPDATE sessions SET last_seen_at = created_at WHERE last_seen_at = 0;
 
 -- Shared, atomic rate-limit counters for serverless/multi-instance deployments.
 CREATE TABLE IF NOT EXISTS rate_limits (
