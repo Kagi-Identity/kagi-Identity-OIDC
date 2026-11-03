@@ -251,25 +251,198 @@
   // -------------------------------------------------------------------------
 
   function initAccount() {
-    const btn = document.getElementById('btn-add-passkey');
-    if (!btn) return;
-    btn.addEventListener('click', async () => {
-      setMsg('');
-      if (!passkeysSupported()) return;
-      btn.disabled = true;
+    const btnAdd = document.getElementById('btn-add-passkey');
+
+    if (btnAdd) {
+      btnAdd.addEventListener('click', async () => {
+        setMsg('');
+        if (!passkeysSupported()) return;
+        btnAdd.disabled = true;
+        try {
+          const start = await post('/api/webauthn/passkey/options', {});
+          const credential = await navigator.credentials.create({
+            publicKey: creationOptions(start.publicKey),
+          });
+          await post('/api/webauthn/passkey/verify', {
+            rid: start.rid,
+            credential: serializeCredential(credential),
+          });
+          setMsg('パスキーを追加しました。', true);
+          setTimeout(() => location.reload(), 700);
+        } catch (err) {
+          btnAdd.disabled = false;
+          setMsg(humanError(err));
+        }
+      });
+    }
+
+    // Row actions are delegated so that server-rendered lists need no inline JS.
+    document.addEventListener('click', async (event) => {
+      const el = event.target.closest('[data-action]');
+      if (!el) return;
+      const action = el.dataset.action;
       try {
-        const start = await post('/api/webauthn/passkey/options', {});
-        const credential = await navigator.credentials.create({
-          publicKey: creationOptions(start.publicKey),
-        });
-        await post('/api/webauthn/passkey/verify', {
-          rid: start.rid,
-          credential: serializeCredential(credential),
-        });
-        setMsg('パスキーを追加しました。', true);
-        setTimeout(() => location.reload(), 700);
+        if (action === 'rename-passkey') {
+          const next = window.prompt('パスキー名', el.dataset.name || 'パスキー');
+          if (next === null) return;
+          await post('/api/account/passkey/rename', { id: el.dataset.id, name: next });
+          setMsg('パスキー名を変更しました。', true);
+          setTimeout(() => location.reload(), 500);
+        } else if (action === 'delete-passkey') {
+          if (!window.confirm('このパスキーを削除しますか？')) return;
+          await post('/api/account/passkey/delete', { id: el.dataset.id });
+          setMsg('パスキーを削除しました。', true);
+          setTimeout(() => location.reload(), 500);
+        } else if (action === 'revoke-session') {
+          if (!window.confirm('このデバイスをサインアウトしますか？')) return;
+          const res = await post('/api/account/sessions/revoke', {
+            id: el.dataset.id,
+          });
+          if (res.current) {
+            location.href = '/login';
+            return;
+          }
+          setMsg('デバイスをサインアウトしました。', true);
+          setTimeout(() => location.reload(), 500);
+        } else if (action === 'revoke-consent') {
+          if (!window.confirm('このアプリへのアクセスを取り消しますか？')) return;
+          await post('/api/account/consent/revoke', {
+            client_id: el.dataset.client,
+          });
+          setMsg('アクセスを取り消しました。', true);
+          setTimeout(() => location.reload(), 500);
+        }
       } catch (err) {
-        btn.disabled = false;
+        setMsg(humanError(err));
+      }
+    });
+
+    const profile = document.getElementById('profile-form');
+    if (profile) {
+      profile.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const button = profile.querySelector('button[type="submit"]');
+        if (button) button.disabled = true;
+        try {
+          await post('/api/account/profile', {
+            display_name: document
+              .getElementById('profile-display-name')
+              .value.trim(),
+            email:
+              document.getElementById('profile-email').value.trim() || null,
+          });
+          setMsg('プロフィールを保存しました。', true);
+          setTimeout(() => location.reload(), 500);
+        } catch (err) {
+          setMsg(humanError(err));
+        } finally {
+          if (button) button.disabled = false;
+        }
+      });
+    }
+
+    const revokeOthers = document.getElementById('btn-revoke-others');
+    if (revokeOthers) {
+      revokeOthers.addEventListener('click', async () => {
+        if (!window.confirm('このデバイス以外をすべてサインアウトしますか？')) return;
+        revokeOthers.disabled = true;
+        try {
+          const res = await post('/api/account/sessions/revoke-others', {});
+          setMsg(`${res.revoked || 0} 台のデバイスをサインアウトしました。`, true);
+          setTimeout(() => location.reload(), 600);
+        } catch (err) {
+          revokeOthers.disabled = false;
+          setMsg(humanError(err));
+        }
+      });
+    }
+
+    const generate = document.getElementById('btn-generate-recovery');
+    if (generate) {
+      generate.addEventListener('click', async () => {
+        if (
+          !window.confirm(
+            '既存のリカバリーコードはすべて無効になります。新しく生成しますか？'
+          )
+        )
+          return;
+        generate.disabled = true;
+        try {
+          const res = await post('/api/account/recovery/generate', {});
+          const list = document.getElementById('recovery-list');
+          const output = document.getElementById('recovery-output');
+          list.innerHTML = '';
+          (res.codes || []).forEach((code) => {
+            const li = document.createElement('li');
+            li.textContent = code;
+            list.appendChild(li);
+          });
+          output.hidden = false;
+          setMsg('新しいリカバリーコードを生成しました。', true);
+        } catch (err) {
+          setMsg(humanError(err));
+        } finally {
+          generate.disabled = false;
+        }
+      });
+    }
+
+    const copy = document.getElementById('btn-copy-recovery');
+    if (copy) {
+      copy.addEventListener('click', async () => {
+        const codes = Array.from(
+          document.querySelectorAll('#recovery-list li')
+        ).map((li) => li.textContent);
+        try {
+          await navigator.clipboard.writeText(codes.join('\n'));
+          setMsg('コピーしました。', true);
+        } catch (_) {
+          setMsg('コピーできませんでした。手動で選択してください。');
+        }
+      });
+    }
+
+    const del = document.getElementById('delete-form');
+    if (del) {
+      del.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const username = document
+          .getElementById('confirm-username')
+          .value.trim();
+        if (!username) return;
+        if (!window.confirm('本当にアカウントを削除しますか？この操作は取り消せません。'))
+          return;
+        try {
+          await post('/api/account/delete', { username });
+          location.href = '/login';
+        } catch (err) {
+          setMsg(humanError(err));
+        }
+      });
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Recovery-code sign in
+  // -------------------------------------------------------------------------
+
+  function initRecover() {
+    const form = document.getElementById('recover-form');
+    if (!form) return;
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      setMsg('');
+      const button = document.getElementById('btn-recover');
+      button.disabled = true;
+      try {
+        const res = await post('/api/recover', {
+          username: document.getElementById('recover-username').value.trim(),
+          code: document.getElementById('recover-code').value.trim(),
+          rid: config.rid || null,
+        });
+        location.href = res.next || '/';
+      } catch (err) {
+        button.disabled = false;
         setMsg(humanError(err));
       }
     });
@@ -333,5 +506,6 @@
   if (config.flow === 'login') initLogin();
   else if (config.flow === 'signup') initSignup();
   else if (config.flow === 'account') initAccount();
+  else if (config.flow === 'recover') initRecover();
   else if (config.flow === 'demo') initDemo();
 })();
