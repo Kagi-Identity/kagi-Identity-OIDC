@@ -42,6 +42,50 @@ pub fn b64(data: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(data)
 }
 
+/// Human-friendly, single-use recovery code: `ABCDE-FGHJK`.
+///
+/// The alphabet omits 0/O and 1/I/L so codes can be read aloud or copied by
+/// hand without ambiguity.
+pub fn recovery_code() -> String {
+    const ALPHABET: &[u8; 32] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let bytes = random_bytes(10);
+    let mut out = String::with_capacity(11);
+    for (i, byte) in bytes.iter().enumerate() {
+        if i == 5 {
+            out.push('-');
+        }
+        out.push(ALPHABET[(*byte as usize) & 31] as char);
+    }
+    out
+}
+
+/// Normalise a recovery code before hashing: uppercase, drop separators and
+/// whitespace. The resulting string is what users effectively type.
+pub fn normalize_recovery_code(code: &str) -> String {
+    code.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+/// Iterations applied to recovery-code hashes. A short code is guessable in
+/// bulk, so a plain SHA-256 of the code would be cheap to invert offline if a
+/// database backup leaked. Keying by user id and iterating the digest makes
+/// that search far more expensive while a single online check stays fast.
+const RECOVERY_HASH_ROUNDS: usize = 20_000;
+
+/// Hash a normalised recovery code for storage and lookup.
+///
+/// Must be used with the same `user_id` on generation and verification; the
+/// user id acts as a per-account salt.
+pub fn hash_recovery_code(user_id: &str, normalized_code: &str) -> String {
+    let mut digest = sha256_hex(&format!("kagi-recovery-v1:{user_id}:{normalized_code}"));
+    for _ in 0..RECOVERY_HASH_ROUNDS {
+        digest = sha256_hex(&digest);
+    }
+    digest
+}
+
 pub fn b64d(s: &str) -> anyhow::Result<Vec<u8>> {
     let trimmed = s.trim().trim_end_matches('=');
     URL_SAFE_NO_PAD
@@ -176,5 +220,30 @@ mod tests {
     #[test]
     fn urlenc_matches_form_encoding() {
         assert_eq!(urlenc("a b/c?d=e"), "a%20b%2Fc%3Fd%3De");
+    }
+
+    #[test]
+    fn recovery_code_shape_and_normalisation() {
+        let code = recovery_code();
+        assert_eq!(code.len(), 11);
+        assert_eq!(&code[5..6], "-");
+        let normalized = normalize_recovery_code(&code.to_ascii_lowercase());
+        assert_eq!(normalized.len(), 10);
+        assert!(normalized.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert_eq!(normalize_recovery_code(" abcde-fghjk "), "ABCDEFGHJK");
+    }
+
+    #[test]
+    fn recovery_code_hash_is_salted_and_normalised() {
+        let hash = hash_recovery_code("user-a", "ABCDEFGHJK");
+        assert_eq!(hash.len(), 64);
+        // Normalisation is stable, so a lower-case code matches its hash.
+        assert_eq!(
+            hash,
+            hash_recovery_code("user-a", &normalize_recovery_code("abcde-fghjk"))
+        );
+        // The user id is part of the digest, so two accounts cannot share
+        // a precomputed table.
+        assert_ne!(hash, hash_recovery_code("user-b", "ABCDEFGHJK"));
     }
 }

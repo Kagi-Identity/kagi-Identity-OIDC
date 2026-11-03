@@ -232,7 +232,7 @@ impl ToValue for String {
     }
 }
 
-impl<'a, T: ToValue + ?Sized> ToValue for &'a T {
+impl<T: ToValue + ?Sized> ToValue for &T {
     fn to_value(&self) -> Value {
         (*self).to_value()
     }
@@ -591,6 +591,26 @@ fn pg_sql(sql: &str) -> String {
     out
 }
 
+/// True when an error is a unique/primary-key violation.
+///
+/// SQLite reports `UNIQUE constraint failed`, PostgreSQL reports
+/// `duplicate key value violates unique constraint`. Relying on one message
+/// silently turns a duplicate registration into a 500 on the other backend.
+pub fn is_unique_violation(error: &anyhow::Error) -> bool {
+    for cause in error.chain() {
+        if let Some(pg) = cause.downcast_ref::<postgres::Error>() {
+            if pg.code() == Some(&postgres::error::SqlState::UNIQUE_VIOLATION) {
+                return true;
+            }
+        }
+        let text = cause.to_string().to_ascii_lowercase();
+        if text.contains("unique constraint") || text.contains("duplicate key value") {
+            return true;
+        }
+    }
+    false
+}
+
 impl Connection {
     pub fn execute(&self, sql: &str, params: Params) -> Result<usize> {
         match self {
@@ -793,6 +813,28 @@ fn blocking<T>(f: impl FnOnce() -> T) -> T {
     }
 }
 
+/// True when every configured PostgreSQL host is explicitly loopback.
+///
+/// TLS is mandatory for remote hosts, but a local `postgres` started without a
+/// certificate is a normal development setup. Only literal loopback addresses
+/// and `localhost` qualify: an arbitrary DNS name must not be able to downgrade
+/// transport security by resolving to 127.0.0.1.
+fn postgres_host_is_loopback(config: &postgres::Config) -> bool {
+    let hosts = config.get_hosts();
+    !hosts.is_empty()
+        && hosts.iter().all(|host| match host {
+            postgres::config::Host::Tcp(host) => {
+                host.eq_ignore_ascii_case("localhost")
+                    || host
+                        .parse::<std::net::IpAddr>()
+                        .map(|ip| ip.is_loopback())
+                        .unwrap_or(false)
+            }
+            #[cfg(unix)]
+            postgres::config::Host::Unix(_) => true,
+        })
+}
+
 // ---------------------------------------------------------------------------
 // Db
 // ---------------------------------------------------------------------------
@@ -823,9 +865,7 @@ impl Db {
                 Self::open_postgres(url, auto_migrate)
             }
             Some(url) if !url.trim().is_empty() => {
-                anyhow::bail!(
-                    "KAGI_DATABASE_URL must start with postgres:// or postgresql://"
-                )
+                anyhow::bail!("KAGI_DATABASE_URL must start with postgres:// or postgresql://")
             }
             _ => Self::open_sqlite(path),
         }
@@ -849,23 +889,41 @@ impl Db {
     }
 
     fn open_postgres(url: &str, auto_migrate: bool) -> anyhow::Result<Self> {
-        let mut config: postgres::Config = url.parse().map_err(|_| {
-            anyhow::anyhow!("parsing KAGI_DATABASE_URL failed; check the URL syntax")
+        let url = url.to_string();
+        // The synchronous PostgreSQL client drives a private current-thread
+        // runtime, which panics if it is created on a tokio worker thread.
+        // Connecting and migrating therefore happens inside a blocking region;
+        // that works from `#[tokio::main]` locally and from the Vercel runtime.
+        let client = blocking(move || -> anyhow::Result<postgres::Client> {
+            // Never echo the URL: it contains the database password.
+            let mut config: postgres::Config = url.parse().map_err(|_| {
+                anyhow::anyhow!("parsing KAGI_DATABASE_URL failed; check the URL syntax")
+            })?;
+            // Identity data and signing keys must never travel over plaintext TCP.
+            // Remote hosts therefore require TLS even if the supplied URL omitted
+            // sslmode=require. Loopback is exempt so that a local `postgres`
+            // instance (and the integration test suite) can run without a
+            // certificate; `Prefer` still upgrades to TLS when the server offers it.
+            config.ssl_mode(if postgres_host_is_loopback(&config) {
+                postgres::config::SslMode::Prefer
+            } else {
+                postgres::config::SslMode::Require
+            });
+            let tls = native_tls::TlsConnector::builder()
+                .build()
+                .context("building TLS connector")?;
+            let mut client = config
+                .connect(postgres_native_tls::MakeTlsConnector::new(tls))
+                .context("connecting to postgres (check KAGI_DATABASE_URL and sslmode)")?;
+            if auto_migrate {
+                // `supabase/schema.sql` contains both CREATE TABLE IF NOT EXISTS and
+                // forward-compatible ALTER statements, so a single batch is enough.
+                client
+                    .batch_execute(POSTGRES_SCHEMA)
+                    .context("applying supabase/schema.sql")?;
+            }
+            Ok(client)
         })?;
-        // Identity data and signing keys must never travel over plaintext TCP.
-        // Require TLS even if the supplied URL omitted sslmode=require.
-        config.ssl_mode(postgres::config::SslMode::Require);
-        let tls = native_tls::TlsConnector::builder()
-            .build()
-            .context("building TLS connector")?;
-        let mut client = config
-            .connect(postgres_native_tls::MakeTlsConnector::new(tls))
-            .context("connecting to postgres (check KAGI_DATABASE_URL and sslmode)")?;
-        if auto_migrate {
-            client
-                .batch_execute(POSTGRES_SCHEMA)
-                .context("applying supabase/schema.sql")?;
-        }
         Ok(Self {
             conn: Mutex::new(Connection::Postgres(RefCell::new(client))),
             backend: "postgres",
@@ -875,6 +933,26 @@ impl Db {
     fn migrate(&self) -> anyhow::Result<()> {
         let c = self.lock();
         c.execute_batch(SQLITE_SCHEMA)?;
+        // SQLite has no `ADD COLUMN IF NOT EXISTS`; ignore the duplicate-column
+        // error so that upgrades are idempotent.
+        for (table, column, decl) in [
+            ("sessions", "last_seen_at", "INTEGER NOT NULL DEFAULT 0"),
+            ("sessions", "user_agent", "TEXT"),
+            ("sessions", "ip", "TEXT"),
+            ("access_tokens", "session_id", "TEXT"),
+        ] {
+            let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {decl}");
+            if let Err(e) = c.execute_batch(&sql) {
+                let message = e.to_string().to_ascii_lowercase();
+                if !message.contains("duplicate column") && !message.contains("already exists") {
+                    return Err(e.into());
+                }
+            }
+        }
+        c.execute(
+            "UPDATE sessions SET last_seen_at = created_at WHERE last_seen_at = 0",
+            params![],
+        )?;
         Ok(())
     }
 
@@ -925,19 +1003,46 @@ impl Db {
     }
 
     /// Remove expired short-lived rows. Cheap enough to run on a timer.
-    pub fn sweep(&self) -> anyhow::Result<()> {
+    /// Delete expired or one-shot state that no longer serves a purpose.
+    ///
+    /// `audit_retention_days == 0` keeps the audit trail indefinitely.
+    pub fn sweep(&self, audit_retention_days: i64) -> anyhow::Result<()> {
         let now = crate::util::now();
         self.with(|c| {
             c.execute("DELETE FROM flows WHERE expires_at < ?1", params![now])?;
-            c.execute("DELETE FROM auth_codes WHERE expires_at < ?1", params![now - 3600])?;
-            c.execute("DELETE FROM dpop_replay WHERE expires_at < ?1", params![now])?;
-            c.execute("DELETE FROM assertion_replay WHERE expires_at < ?1", params![now])?;
-            c.execute("DELETE FROM rate_limits WHERE window_start < ?1", params![now - 3600])?;
+            c.execute(
+                "DELETE FROM auth_codes WHERE expires_at < ?1",
+                params![now - 3600],
+            )?;
+            c.execute(
+                "DELETE FROM dpop_replay WHERE expires_at < ?1",
+                params![now],
+            )?;
+            c.execute(
+                "DELETE FROM assertion_replay WHERE expires_at < ?1",
+                params![now],
+            )?;
+            c.execute(
+                "DELETE FROM rate_limits WHERE window_start < ?1",
+                params![now - 3600],
+            )?;
             c.execute("DELETE FROM sessions WHERE expires_at < ?1", params![now])?;
             c.execute(
                 "DELETE FROM refresh_tokens WHERE expires_at < ?1 AND revoked = 1",
                 params![now - 86400],
             )?;
+            // Consumed recovery codes have no further use; keep a short grace
+            // window so a recent recovery can still be audited from the row.
+            c.execute(
+                "DELETE FROM recovery_codes WHERE used_at IS NOT NULL AND used_at < ?1",
+                params![now - 30 * 86400],
+            )?;
+            if audit_retention_days > 0 {
+                c.execute(
+                    "DELETE FROM audit_events WHERE created_at < ?1",
+                    params![now - audit_retention_days * 86400],
+                )?;
+            }
             Ok(())
         })
     }
@@ -1161,8 +1266,7 @@ fn map_flow(row: &Row) -> Result<Flow> {
         kind: row.get("kind")?,
         user_id: row.get("user_id")?,
         client_id: row.get("client_id")?,
-        payload: serde_json::from_str(&row.get::<_, String>("payload")?)
-            .unwrap_or(JsonValue::Null),
+        payload: serde_json::from_str(&row.get::<_, String>("payload")?).unwrap_or(JsonValue::Null),
         challenge: row.get("challenge")?,
         csrf: row.get("csrf")?,
         expires_at: row.get("expires_at")?,
@@ -1171,7 +1275,10 @@ fn map_flow(row: &Row) -> Result<Flow> {
 }
 
 pub fn load_user(c: &Connection, id: &str) -> anyhow::Result<Option<User>> {
-    Ok(c.query_row("SELECT * FROM users WHERE id = ?1", params![id], map_user).optional()?)
+    Ok(
+        c.query_row("SELECT * FROM users WHERE id = ?1", params![id], map_user)
+            .optional()?,
+    )
 }
 
 pub fn load_user_by_name(c: &Connection, username: &str) -> anyhow::Result<Option<User>> {
@@ -1184,7 +1291,12 @@ pub fn load_user_by_name(c: &Connection, username: &str) -> anyhow::Result<Optio
 }
 
 pub fn load_client(c: &Connection, id: &str) -> anyhow::Result<Option<Client>> {
-    Ok(c.query_row("SELECT * FROM clients WHERE id = ?1", params![id], map_client).optional()?)
+    Ok(c.query_row(
+        "SELECT * FROM clients WHERE id = ?1",
+        params![id],
+        map_client,
+    )
+    .optional()?)
 }
 
 /// Remember (or update) the scopes a user has approved for a client.
@@ -1242,10 +1354,7 @@ pub fn list_sessions(c: &Connection, user_id: &str) -> anyhow::Result<Vec<Sessio
         params![user_id, crate::util::now()],
     )?;
     rows.iter()
-        .map(|row| {
-            map_session(row)
-                .map_err(|e| anyhow::anyhow!(e.to_string()))
-        })
+        .map(|row| map_session(row).map_err(|e| anyhow::anyhow!(e.to_string())))
         .collect()
 }
 
@@ -1261,17 +1370,6 @@ pub fn delete_session(c: &Connection, id_hash: &str, user_id: &str) -> anyhow::R
     Ok(c.execute(
         "DELETE FROM sessions WHERE id = ?1 AND user_id = ?2",
         params![id_hash, user_id],
-    )?)
-}
-
-pub fn delete_other_sessions(
-    c: &Connection,
-    user_id: &str,
-    keep_id: &str,
-) -> anyhow::Result<usize> {
-    Ok(c.execute(
-        "DELETE FROM sessions WHERE user_id = ?1 AND id <> ?2",
-        params![user_id, keep_id],
     )?)
 }
 
@@ -1400,11 +1498,7 @@ pub fn record_audit(
     Ok(())
 }
 
-pub fn recent_audit(
-    c: &Connection,
-    user_id: &str,
-    limit: i64,
-) -> anyhow::Result<Vec<AuditEvent>> {
+pub fn recent_audit(c: &Connection, user_id: &str, limit: i64) -> anyhow::Result<Vec<AuditEvent>> {
     let rows = c.query_all(
         "SELECT * FROM audit_events WHERE user_id = ?1
          ORDER BY created_at DESC LIMIT ?2",
@@ -1473,9 +1567,8 @@ pub fn consume_recovery_code(
 }
 
 pub fn stats(c: &Connection) -> anyhow::Result<Stats> {
-    let count = |sql: &str| -> anyhow::Result<i64> {
-        Ok(c.query_row(sql, params![], |r| r.get(0))?)
-    };
+    let count =
+        |sql: &str| -> anyhow::Result<i64> { Ok(c.query_row(sql, params![], |r| r.get(0))?) };
     let now = crate::util::now();
     Ok(Stats {
         users: count("SELECT COUNT(*) FROM users")?,
@@ -1588,7 +1681,11 @@ pub fn load_credential(c: &Connection, id: &str) -> anyhow::Result<Option<Creden
 /// Seed a public demo client so the server is usable immediately.
 pub fn seed_demo_client(c: &Connection) -> anyhow::Result<()> {
     let exists: Option<String> = c
-        .query_row("SELECT id FROM clients WHERE id = 'demo-web'", params![], |r| r.get(0))
+        .query_row(
+            "SELECT id FROM clients WHERE id = 'demo-web'",
+            params![],
+            |r| r.get(0),
+        )
         .optional()?;
     if exists.is_some() {
         return Ok(());
@@ -1614,7 +1711,6 @@ pub fn seed_demo_client(c: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod schema_regression_tests {
     #[test]
@@ -1624,6 +1720,19 @@ mod schema_regression_tests {
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS session_id"));
         assert!(schema.contains("CREATE TABLE IF NOT EXISTS audit_events"));
         assert!(schema.contains("CREATE TABLE IF NOT EXISTS recovery_codes"));
+    }
+
+    fn loopback(url: &str) -> bool {
+        super::postgres_host_is_loopback(&url.parse().expect("valid postgres url"))
+    }
+
+    #[test]
+    fn only_explicit_loopback_hosts_relax_tls() {
+        assert!(loopback("postgresql://kagi@127.0.0.1:5432/postgres"));
+        assert!(loopback("postgresql://kagi@localhost/postgres"));
+        assert!(loopback("postgresql://kagi@[::1]:5432/postgres"));
+        assert!(!loopback("postgresql://kagi@db.example.com/postgres"));
+        assert!(!loopback("postgresql://kagi@10.0.0.5/postgres"));
     }
 
     #[test]
@@ -1641,7 +1750,8 @@ mod schema_regression_tests {
 
     #[test]
     fn malformed_postgres_url_error_does_not_disclose_credentials() {
-        let supplied = "postgresql://service-user:very-secret-password@db.example.invalid:not-a-port/identity";
+        let supplied =
+            "postgresql://service-user:very-secret-password@db.example.invalid:not-a-port/identity";
         let error = super::Db::open_with_options(Some(supplied), ":memory:", false)
             .err()
             .expect("a malformed PostgreSQL URL must be rejected");
