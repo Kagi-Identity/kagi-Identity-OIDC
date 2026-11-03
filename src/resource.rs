@@ -2,6 +2,7 @@
 //! revocation, RP-initiated logout, dynamic registration and key rotation.
 
 use crate::db::{self, Client};
+use crate::db::{params, OptionalExt};
 use crate::error::{ApiResult, OauthError};
 use crate::jose;
 use crate::oidc;
@@ -11,7 +12,6 @@ use axum::extract::{Form, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
-use crate::db::{params, OptionalExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -33,11 +33,7 @@ fn bearer_token(headers: &HeaderMap) -> Option<(String, String)> {
 }
 
 pub fn verify_access_token(st: &AppState, token: &str) -> ApiResult<Value> {
-    let jwks = st
-        .keys
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .jwks();
+    let jwks = st.keys.read().unwrap_or_else(|e| e.into_inner()).jwks();
     let (_header, claims) = jose::verify_with_jwks(&jwks, token, Some("at+jwt"))
         .map_err(|_| OauthError::unauthorized("invalid access token"))?;
 
@@ -72,11 +68,7 @@ pub fn verify_access_token(st: &AppState, token: &str) -> ApiResult<Value> {
 // UserInfo
 // ---------------------------------------------------------------------------
 
-pub async fn userinfo(
-    State(st): State<AppState>,
-    method: Method,
-    headers: HeaderMap,
-) -> Response {
+pub async fn userinfo(State(st): State<AppState>, method: Method, headers: HeaderMap) -> Response {
     match userinfo_inner(&st, &method, &headers) {
         Ok(res) => res,
         Err(e) => e.into_response(),
@@ -87,8 +79,9 @@ fn userinfo_inner(st: &AppState, method: &Method, headers: &HeaderMap) -> ApiRes
     const BEARER: &str = "Bearer realm=\"kagi\"";
     const DPOP: &str = "DPoP algs=\"ES256\"";
 
-    let (scheme, token) = bearer_token(headers)
-        .ok_or_else(|| OauthError::unauthorized("an access token is required").with_challenge(BEARER))?;
+    let (scheme, token) = bearer_token(headers).ok_or_else(|| {
+        OauthError::unauthorized("an access token is required").with_challenge(BEARER)
+    })?;
     let claims = verify_access_token(st, &token).map_err(|e| e.with_challenge(BEARER))?;
 
     let bound_jkt = claims
@@ -108,12 +101,12 @@ fn userinfo_inner(st: &AppState, method: &Method, headers: &HeaderMap) -> ApiRes
                 "/userinfo",
                 Some(token.as_str()),
             )
-            .map_err(|e| {
-                e.with_status(StatusCode::UNAUTHORIZED).with_challenge(DPOP)
-            })?;
+            .map_err(|e| e.with_status(StatusCode::UNAUTHORIZED).with_challenge(DPOP))?;
             if proof.jkt != jkt {
-                return Err(OauthError::unauthorized("DPoP key does not match the token")
-                    .with_challenge(DPOP));
+                return Err(
+                    OauthError::unauthorized("DPoP key does not match the token")
+                        .with_challenge(DPOP),
+                );
             }
         }
         ("dpop", None) => {
@@ -188,7 +181,10 @@ fn introspect_inner(
 
     // Try an access token first (a JWT), then an opaque refresh token.
     if let Ok(claims) = verify_access_token(st, token) {
-        let token_client = claims.get("client_id").and_then(Value::as_str).unwrap_or("");
+        let token_client = claims
+            .get("client_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         if token_client != client.id {
             return Ok(Json(json!({ "active": false })).into_response());
         }
@@ -327,7 +323,8 @@ fn end_session(st: &AppState, headers: &HeaderMap, params: &HashMap<String, Stri
     }
 
     let mut redirect_to: Option<String> = None;
-    if let (Some(target), Some(client)) = (params.get("post_logout_redirect_uri"), client.as_ref()) {
+    if let (Some(target), Some(client)) = (params.get("post_logout_redirect_uri"), client.as_ref())
+    {
         if client.post_logout_redirect_uris.iter().any(|u| u == target) {
             let mut url = target.clone();
             if let Some(state) = params.get("state") {
@@ -335,7 +332,10 @@ fn end_session(st: &AppState, headers: &HeaderMap, params: &HashMap<String, Stri
             }
             redirect_to = Some(url);
         } else {
-            return (StatusCode::BAD_REQUEST, "post_logout_redirect_uri is not registered")
+            return (
+                StatusCode::BAD_REQUEST,
+                "post_logout_redirect_uri is not registered",
+            )
                 .into_response();
         }
     }
@@ -378,11 +378,7 @@ pub async fn register_client(
     }
 }
 
-fn register_client_inner(
-    st: &AppState,
-    headers: &HeaderMap,
-    body: &Value,
-) -> ApiResult<Response> {
+fn register_client_inner(st: &AppState, headers: &HeaderMap, body: &Value) -> ApiResult<Response> {
     if let Some(expected) = &st.cfg.registration_token {
         let provided = headers
             .get(header::AUTHORIZATION)
@@ -399,7 +395,11 @@ fn register_client_inner(
     let redirect_uris: Vec<String> = body
         .get("redirect_uris")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     if redirect_uris.is_empty() {
         return Err(OauthError::invalid_request("redirect_uris is required"));
@@ -424,9 +424,14 @@ fn register_client_inner(
         auth_method.as_str(),
         "none" | "client_secret_basic" | "client_secret_post" | "private_key_jwt"
     ) {
-        return Err(OauthError::invalid_request("unsupported token_endpoint_auth_method"));
+        return Err(OauthError::invalid_request(
+            "unsupported token_endpoint_auth_method",
+        ));
     }
-    if auth_method == "private_key_jwt" && body.get("jwks").is_none() && body.get("jwks_uri").is_some() {
+    if auth_method == "private_key_jwt"
+        && body.get("jwks").is_none()
+        && body.get("jwks_uri").is_some()
+    {
         return Err(OauthError::invalid_request(
             "jwks_uri is not supported; supply jwks inline",
         ));
@@ -435,15 +440,25 @@ fn register_client_inner(
     let grant_types: Vec<String> = body
         .get("grant_types")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_else(|| vec!["authorization_code".into(), "refresh_token".into()]);
     let response_types: Vec<String> = body
         .get("response_types")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_else(|| vec!["code".into()]);
     if response_types.iter().any(|r| r != "code") {
-        return Err(OauthError::invalid_request("only response_type=code is supported"));
+        return Err(OauthError::invalid_request(
+            "only response_type=code is supported",
+        ));
     }
     if grant_types.iter().any(|g| {
         !matches!(
@@ -457,7 +472,7 @@ fn register_client_inner(
     let scopes: Vec<String> = body
         .get("scope")
         .and_then(Value::as_str)
-        .map(|s| oidc::split_scope(s))
+        .map(oidc::split_scope)
         .unwrap_or_else(|| vec!["openid".into(), "profile".into(), "email".into()]);
     if !scopes.iter().any(|s| s == "openid") {
         return Err(OauthError::invalid_scope("openid is required"));
@@ -479,7 +494,11 @@ fn register_client_inner(
     let post_logout: Vec<String> = body
         .get("post_logout_redirect_uris")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     st.db.with(|c| {
@@ -498,7 +517,9 @@ fn register_client_inner(
                 serde_json::to_string(&scopes).unwrap_or_else(|_| "[]".into()),
                 auth_method,
                 body.get("jwks").map(|j| j.to_string()),
-                body.get("require_dpop").and_then(Value::as_bool).unwrap_or(false) as i64,
+                body.get("require_dpop")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false) as i64,
                 body.get("require_pushed_authorization_requests")
                     .and_then(Value::as_bool)
                     .unwrap_or(false) as i64,
@@ -558,23 +579,93 @@ pub async fn rotate_keys(State(st): State<AppState>, headers: HeaderMap) -> Resp
 }
 
 // ---------------------------------------------------------------------------
+// Admin statistics
+// ---------------------------------------------------------------------------
+
+fn admin_authorised(st: &AppState, headers: &HeaderMap) -> Option<bool> {
+    let Some(expected) = &st.cfg.admin_token else {
+        return None;
+    };
+    let provided = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    Some(ct_eq(provided.trim(), expected))
+}
+
+pub async fn admin_stats(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    match admin_authorised(&st, &headers) {
+        // Hide the endpoint entirely when no admin token is configured.
+        None => return StatusCode::NOT_FOUND.into_response(),
+        Some(false) => return StatusCode::UNAUTHORIZED.into_response(),
+        Some(true) => {}
+    }
+
+    match st.db.with(db::stats) {
+        Ok(stats) => {
+            let mut res = Json(json!({
+                "issuer": st.cfg.issuer,
+                "database": st.db.backend(),
+                "generated_at": now(),
+                "stats": stats,
+            }))
+            .into_response();
+            res.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            res
+        }
+        Err(error) => {
+            // Keep database details out of the response body; operators get
+            // them from the server log.
+            eprintln!("[kagi] admin stats query failed: {error}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "stats_unavailable" })),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
 
+/// Liveness + database readiness probe. Returns `503` when the database cannot
+/// answer a trivial query, which makes it safe to use as a Kubernetes /
+/// load-balancer ready check.
 pub async fn health(State(st): State<AppState>) -> Response {
-    let ready = st.db.with(|conn| {
-        let _: i64 = conn.query_row("SELECT COUNT(*) FROM rate_limits", params![], |row| row.get(0))?;
-        let _: i64 = conn.query_row("SELECT COUNT(*) FROM signing_keys", params![], |row| row.get(0))?;
-        Ok(())
-    }).is_ok();
+    let db_ok = st
+        .db
+        .with(|c| {
+            let value: i64 = c.query_row("SELECT 1", params![], |r| r.get(0))?;
+            // Touch the tables created by the runtime migrations so that a
+            // half-applied schema is reported as unavailable, not "ok".
+            let _: i64 =
+                c.query_row("SELECT COUNT(*) FROM rate_limits", params![], |r| r.get(0))?;
+            let _: i64 =
+                c.query_row("SELECT COUNT(*) FROM signing_keys", params![], |r| r.get(0))?;
+            Ok(value == 1)
+        })
+        .unwrap_or(false);
 
-    if ready {
-        Json(json!({ "status": "ok", "ready": true })).into_response()
+    let status = if db_ok {
+        StatusCode::OK
     } else {
-        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
-            "status": "unavailable",
-            "ready": false,
-            "error": "database unavailable"
-        }))).into_response()
-    }
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    let mut res = (
+        status,
+        Json(json!({
+            "status": if db_ok { "ok" } else { "unavailable" },
+            "database": st.db.backend(),
+            "database_ready": db_ok,
+            "issuer": st.cfg.issuer,
+        })),
+    )
+        .into_response();
+    res.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res
 }
