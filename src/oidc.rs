@@ -1,5 +1,6 @@
 //! OIDC / OAuth 2.1 core: discovery, PAR, authorize, token issuance.
 
+use crate::db::params;
 use crate::db::{self, Client, Flow, Session, User};
 use crate::dpop;
 use crate::error::{ApiResult, OauthError};
@@ -12,7 +13,6 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use crate::db::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -112,7 +112,9 @@ pub fn scope_contains(scope: &str, name: &str) -> bool {
 
 fn scope_subset(requested: &str, allowed: &str) -> bool {
     let allowed = split_scope(allowed);
-    split_scope(requested).iter().all(|s| allowed.iter().any(|a| a == s))
+    split_scope(requested)
+        .iter()
+        .all(|s| allowed.iter().any(|a| a == s))
 }
 
 // ---------------------------------------------------------------------------
@@ -169,20 +171,12 @@ pub async fn discovery(State(st): State<AppState>) -> Response {
         "backchannel_logout_supported": false,
         "frontchannel_logout_supported": false,
     });
-    (
-        [(header::CACHE_CONTROL, "public, max-age=300")],
-        Json(doc),
-    )
-        .into_response()
+    ([(header::CACHE_CONTROL, "public, max-age=300")], Json(doc)).into_response()
 }
 
 pub async fn jwks(State(st): State<AppState>) -> Response {
     let jwks = st.keys.read().unwrap_or_else(|e| e.into_inner()).jwks();
-    (
-        [(header::CACHE_CONTROL, "public, max-age=300")],
-        Json(jwks),
-    )
-        .into_response()
+    ([(header::CACHE_CONTROL, "public, max-age=300")], Json(jwks)).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +234,7 @@ fn par_inner(
         "request_uri": format!("urn:ietf:params:oauth:request_uri:{id}"),
         "expires_in": st.cfg.par_ttl,
     });
-    let mut res = Json(body).into_response();
+    let mut res = (StatusCode::CREATED, Json(body)).into_response();
     res.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(res)
@@ -349,7 +343,9 @@ fn resolve_authorization_request(
             .with(|c| db::load_flow(c, id))?
             .ok_or_else(|| OauthError::invalid_request("unknown or expired request_uri"))?;
         if flow.kind != "par" {
-            return Err(OauthError::invalid_request("request_uri is not a PAR handle"));
+            return Err(OauthError::invalid_request(
+                "request_uri is not a PAR handle",
+            ));
         }
         // Single use.
         let used = st.db.with(|c| {
@@ -450,7 +446,8 @@ fn resolve_request_object(
         }
     }
     // Parameters outside the request object must not override it.
-    map.entry("client_id".to_string()).or_insert(client.id.clone());
+    map.entry("client_id".to_string())
+        .or_insert(client.id.clone());
     Ok(AuthzParams::from_map(&map))
 }
 
@@ -477,7 +474,10 @@ fn validate_authorization_params(st: &AppState, p: &AuthzParams) -> ApiResult<Cl
     if !scopes.iter().any(|s| s == "openid") {
         return Err(OauthError::invalid_scope("openid scope is required"));
     }
-    if let Some(bad) = scopes.iter().find(|s| !client.scopes.iter().any(|a| a == *s)) {
+    if let Some(bad) = scopes
+        .iter()
+        .find(|s| !client.scopes.iter().any(|a| a == *s))
+    {
         return Err(OauthError::invalid_scope(format!(
             "scope {bad} is not registered for this client"
         )));
@@ -488,7 +488,9 @@ fn validate_authorization_params(st: &AppState, p: &AuthzParams) -> ApiResult<Cl
         ));
     }
     if p.code_challenge.len() < 43 || p.code_challenge.len() > 128 {
-        return Err(OauthError::invalid_request("code_challenge has an invalid length"));
+        return Err(OauthError::invalid_request(
+            "code_challenge has an invalid length",
+        ));
     }
     if p.code_challenge_method.as_deref() != Some("S256") {
         return Err(OauthError::invalid_request(
@@ -548,7 +550,12 @@ fn create_authorize_flow(st: &AppState, params: &AuthzParams) -> ApiResult<Flow>
     })
 }
 
-fn authz_fail(st: &AppState, params: Option<&AuthzParams>, code: &str, description: &str) -> Response {
+fn authz_fail(
+    st: &AppState,
+    params: Option<&AuthzParams>,
+    code: &str,
+    description: &str,
+) -> Response {
     if let Some(p) = params {
         if let Ok(Some(client)) = st.db.with(|c| db::load_client(c, &p.client_id)) {
             if client.redirect_uris.iter().any(|u| u == &p.redirect_uri) {
@@ -592,10 +599,13 @@ fn authorization_error_redirect(
             "error_description": description,
             "state": p.state,
         });
-        let signed = match st.keys.read().unwrap_or_else(|e| e.into_inner()).current().sign(Some("JWT"), &claims) {
-            Ok(t) => t,
-            Err(_) => String::new(),
-        };
+        let signed = st
+            .keys
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .current()
+            .sign(Some("JWT"), &claims)
+            .unwrap_or_default();
         let target = if mode.starts_with("fragment") {
             build_fragment(&p.redirect_uri, &[("response", signed)])
         } else {
@@ -627,7 +637,10 @@ pub fn complete_authorization(
 
     if !approve {
         let _ = st.db.with(|c| {
-            Ok(c.execute("UPDATE flows SET consumed = 1 WHERE id = ?1", params![flow.id])?)
+            Ok(c.execute(
+                "UPDATE flows SET consumed = 1 WHERE id = ?1",
+                params![flow.id],
+            )?)
         });
         return authorization_error_redirect(
             st,
@@ -667,10 +680,18 @@ pub fn complete_authorization(
         Ok(())
     });
     if inserted.is_err() {
-        return authz_fail(st, Some(&params), "server_error", "could not store the code");
+        return authz_fail(
+            st,
+            Some(&params),
+            "server_error",
+            "could not store the code",
+        );
     }
     let _ = st.db.with(|c| {
-        Ok(c.execute("UPDATE flows SET consumed = 1 WHERE id = ?1", params![flow.id])?)
+        Ok(c.execute(
+            "UPDATE flows SET consumed = 1 WHERE id = ?1",
+            params![flow.id],
+        )?)
     });
 
     authorization_success(st, &client, &params, &code, session)
@@ -698,7 +719,13 @@ fn authorization_success(
             "acr": session.acr,
             "sub": session.user_id,
         });
-        let signed = match st.keys.read().unwrap_or_else(|e| e.into_inner()).current().sign(Some("JWT"), &claims) {
+        let signed = match st
+            .keys
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .current()
+            .sign(Some("JWT"), &claims)
+        {
             Ok(t) => t,
             Err(_) => return authz_fail(st, Some(p), "server_error", "signing failed"),
         };
@@ -778,9 +805,7 @@ fn token_inner(
     }
 
     match grant_type.as_str() {
-        "authorization_code" => {
-            exchange_code(st, &client, form, jkt.as_deref())
-        }
+        "authorization_code" => exchange_code(st, &client, form, jkt.as_deref()),
         "refresh_token" => refresh(st, &client, form, jkt.as_deref()),
         "client_credentials" => client_credentials(st, &client, form, jkt.as_deref()),
         other => Err(OauthError::unsupported(format!(
@@ -802,7 +827,9 @@ fn exchange_code(
         .get("code_verifier")
         .ok_or_else(|| OauthError::invalid_request("code_verifier is required"))?;
     if verifier.len() < 43 || verifier.len() > 128 {
-        return Err(OauthError::invalid_grant("code_verifier has an invalid length"));
+        return Err(OauthError::invalid_grant(
+            "code_verifier has an invalid length",
+        ));
     }
 
     let code_hash = sha256_hex(code);
@@ -1036,8 +1063,14 @@ fn refresh(
         ));
     }
 
-    let (access_token, expires_in) =
-        mint_access_token(st, &row.user_id, &client.id, &scope, jkt, row.session_id.as_deref())?;
+    let (access_token, expires_in) = mint_access_token(
+        st,
+        &row.user_id,
+        &client.id,
+        &scope,
+        jkt,
+        row.session_id.as_deref(),
+    )?;
 
     let id_token = if scope_contains(&scope, "openid") {
         let user = st
@@ -1090,7 +1123,9 @@ fn client_credentials(
     let scope = match form.get("scope") {
         Some(s) if !s.trim().is_empty() => {
             if !scope_subset(s, &client.scopes.join(" ")) {
-                return Err(OauthError::invalid_scope("scope exceeds client registration"));
+                return Err(OauthError::invalid_scope(
+                    "scope exceeds client registration",
+                ));
             }
             s.clone()
         }
@@ -1203,6 +1238,9 @@ fn mint_access_token(
     Ok((token, st.cfg.access_ttl))
 }
 
+// Token minting signatures mirror the OAuth/OpenID claims they emit; grouping
+// them into a struct would obscure that mapping without removing any argument.
+#[allow(clippy::too_many_arguments)]
 fn mint_refresh_token(
     st: &AppState,
     user_id: &str,
@@ -1244,6 +1282,8 @@ fn mint_refresh_token(
     Ok(token)
 }
 
+// See `mint_refresh_token` for why the claim arguments stay explicit.
+#[allow(clippy::too_many_arguments)]
 fn mint_id_token(
     st: &AppState,
     user: &User,
@@ -1412,9 +1452,10 @@ fn verify_client_assertion(st: &AppState, client: &Client, assertion: &str) -> A
     let token_endpoint = st.cfg.endpoint("/token");
     let aud_ok = match claims.get("aud") {
         Some(Value::String(s)) => s == &token_endpoint || s == &st.cfg.issuer,
-        Some(Value::Array(a)) => a
-            .iter()
-            .any(|v| v.as_str() == Some(token_endpoint.as_str()) || v.as_str() == Some(st.cfg.issuer.as_str())),
+        Some(Value::Array(a)) => a.iter().any(|v| {
+            v.as_str() == Some(token_endpoint.as_str())
+                || v.as_str() == Some(st.cfg.issuer.as_str())
+        }),
         _ => false,
     };
     if !aud_ok {

@@ -398,7 +398,7 @@ fn verify_attestation(
                 .text_get("alg")
                 .and_then(Cbor::as_int)
                 .ok_or_else(|| anyhow!("packed attestation has no alg"))?;
-            if alg != key.alg as i128 {
+            if alg != key.alg {
                 bail!("attestation alg does not match the credential key");
             }
             let sig = stmt
@@ -437,15 +437,27 @@ impl CoseKey {
         if !matches!(map, Cbor::Map(_)) {
             bail!("COSE key must be a CBOR map");
         }
-        let kty = map.map_int(1).ok_or_else(|| anyhow!("COSE key has no kty"))?;
-        let alg = map.map_int(3).ok_or_else(|| anyhow!("COSE key has no alg"))?;
+        let kty = map
+            .map_int(1)
+            .ok_or_else(|| anyhow!("COSE key has no kty"))?;
+        let alg = map
+            .map_int(3)
+            .ok_or_else(|| anyhow!("COSE key has no alg"))?;
         let crv = map.map_int(-1);
         let x = map.map_bytes(-2).unwrap_or_default();
         let y = map.map_bytes(-3);
         let n = map.map_bytes(-1);
         let e = map.map_bytes(-2);
 
-        let key = Self { kty, alg, crv, x, y, n, e };
+        let key = Self {
+            kty,
+            alg,
+            crv,
+            x,
+            y,
+            n,
+            e,
+        };
         key.validate()?;
         Ok(key)
     }
@@ -629,7 +641,10 @@ mod cbor {
 
     impl<'a> Decoder<'a> {
         fn byte(&mut self) -> Result<u8> {
-            let b = *self.b.get(self.pos).ok_or_else(|| anyhow!("unexpected end of CBOR"))?;
+            let b = *self
+                .b
+                .get(self.pos)
+                .ok_or_else(|| anyhow!("unexpected end of CBOR"))?;
             self.pos += 1;
             Ok(b)
         }
