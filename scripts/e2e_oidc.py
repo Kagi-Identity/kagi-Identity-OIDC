@@ -94,7 +94,7 @@ authz = {
     "code_challenge": challenge, "code_challenge_method": "S256",
 }
 s, h, j, b = form_post("/par", authz, {"Cookie": "kagi_sid=" + sid})
-check("PAR returns request_uri", s == 200 and j["request_uri"].startswith("urn:ietf:params:oauth:request_uri:"), b)
+check("PAR returns request_uri", s == 201 and j["request_uri"].startswith("urn:ietf:params:oauth:request_uri:"), b)
 request_uri = j["request_uri"]
 
 s, h, j, b = form_post("/par", {k: v for k, v in authz.items() if k != "code_challenge"})
@@ -216,7 +216,7 @@ def dpop(htm, htu, extra=None, token=None):
 
 authz3 = dict(authz); authz3["dpop_jkt"] = jkt; authz3["state"] = "st-dpop"
 s, h, j, b = form_post("/par", authz3, {"DPoP": dpop("POST", BASE + "/par")})
-check("PAR with DPoP", s == 200, b)
+check("PAR with DPoP", s == 201, b)
 ru3 = j["request_uri"]
 s, h, b = req("GET", "/authorize?" + up.urlencode({"client_id": CLIENT, "request_uri": ru3}), {"Cookie": "kagi_sid=" + sid})
 rid3 = up.parse_qs(up.urlparse(h.get("Location", "")).query).get("rid", [""])[0]
@@ -247,13 +247,19 @@ s, h, b = req("GET", "/userinfo", headers={"Authorization": "Bearer " + at3, "DP
 check("Bearer scheme with DPoP-bound AT rejected", s == 401, (s, b))
 
 # ---------------------------------------------------------------- DCR + client_credentials
+# When the server is started with KAGI_REGISTRATION_TOKEN, RFC 7591 requires
+# the initial access token. Reuse the same environment variable here so the
+# suite works with either configuration.
+dcr_headers = {"Content-Type": "application/json"}
+if os.environ.get("KAGI_REGISTRATION_TOKEN"):
+    dcr_headers["Authorization"] = "Bearer " + os.environ["KAGI_REGISTRATION_TOKEN"]
 s, h, j, b = form_post("/register", json.dumps({
     "client_name": "e2e-confidential",
     "redirect_uris": ["http://localhost:9999/cb"],
     "grant_types": ["client_credentials"],
     "token_endpoint_auth_method": "client_secret_basic",
     "scope": "openid",
-}).encode(), {"Content-Type": "application/json"})
+}).encode(), dcr_headers)
 check("DCR", s in (200, 201) and j.get("client_id") and j.get("client_secret"), b)
 cid, csec = j["client_id"], j["client_secret"]
 s, h, j, b = form_post("/token", {"grant_type": "client_credentials", "scope": "openid"},

@@ -1,8 +1,16 @@
 """Security regression tests for authorization-code races, DPoP replay, key rotation and OIDC metadata.
 
 Run against a local Kagi server with KAGI_SEED_DEMO=1 and KAGI_DB pointing
-at the same SQLite database used by the server. This is an integration test,
-not an OAuth/OIDC certification suite.
+at the same SQLite database used by the server:
+
+    KAGI_DB=kagi-security-e2e.db python scripts/e2e_security_races.py
+
+Against PostgreSQL / Supabase, set KAGI_DATABASE_URL instead (psycopg2 is
+required by requirements-test.txt):
+
+    KAGI_DATABASE_URL=postgresql://... python scripts/e2e_security_races.py
+
+This is an integration test, not an OAuth/OIDC certification suite.
 """
 import base64
 import hashlib
@@ -21,6 +29,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, utils
 
 BASE = os.environ.get("KAGI_BASE", "http://localhost:8080").rstrip("/")
 DB = os.environ.get("KAGI_DB", "kagi-security-e2e.db")
+DATABASE_URL = os.environ.get("KAGI_DATABASE_URL", "").strip()
 ADMIN = os.environ.get("KAGI_ADMIN_TOKEN", "test-admin")
 CLIENT = "demo-web"
 REDIRECT = "http://localhost:3000/callback"
@@ -44,6 +53,21 @@ def pkce():
 def insert_code(code, challenge):
     now = int(time.time())
     digest = hashlib.sha256(code.encode()).hexdigest()
+    values = (digest, CLIENT, "security-test-user", REDIRECT,
+              "openid profile email offline_access", "security-test-nonce",
+              challenge, now, '["passkey"]', "urn:kagi:acr:passkey", now + 120, now)
+    if DATABASE_URL:
+        import psycopg2
+        with psycopg2.connect(DATABASE_URL) as con, con.cursor() as cur:
+            cur.execute(
+                """INSERT INTO auth_codes
+                (code_hash, client_id, user_id, redirect_uri, scope, nonce,
+                 code_challenge, auth_time, amr, acr, dpop_jkt, session_id,
+                 expires_at, created_at, consumed)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, %s, %s, 0)""",
+                values,
+            )
+        return
     with sqlite3.connect(DB, timeout=10) as con:
         con.execute(
             """INSERT INTO auth_codes
@@ -51,9 +75,7 @@ def insert_code(code, challenge):
              code_challenge, auth_time, amr, acr, dpop_jkt, session_id,
              expires_at, created_at, consumed)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, 0)""",
-            (digest, CLIENT, "security-test-user", REDIRECT,
-             "openid profile email offline_access", "security-test-nonce",
-             challenge, now, '["passkey"]', "urn:kagi:acr:passkey", now + 120, now),
+            values,
         )
 
 def exchange(code, verifier):
@@ -75,9 +97,29 @@ def make_dpop_proof(key, jwk, jti, method, url):
     r, s = utils.decode_dss_signature(der)
     return head + "." + body + "." + b64u(r.to_bytes(32, "big") + s.to_bytes(32, "big"))
 
-def main():
-    # Seed only isolated test records in the dedicated CI database.
+def seed_test_rows():
+    """Seed only isolated test records in the dedicated CI database."""
     now = int(time.time())
+    if DATABASE_URL:
+        import psycopg2
+        with psycopg2.connect(DATABASE_URL) as con, con.cursor() as cur:
+            cur.execute(
+                """INSERT INTO users
+                (id, username, display_name, email, email_verified, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET username = excluded.username,
+                  display_name = excluded.display_name, email = excluded.email""",
+                ("security-test-user", "security-test-user", "Security Test",
+                 "security-test@example.invalid", 0, now),
+            )
+            cur.execute(
+                """INSERT INTO consents (user_id, client_id, scope, created_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (user_id, client_id) DO UPDATE SET
+                  scope = excluded.scope, created_at = excluded.created_at""",
+                ("security-test-user", CLIENT, "openid profile email offline_access", now),
+            )
+        return
     with sqlite3.connect(DB, timeout=10) as con:
         con.execute(
             """INSERT OR REPLACE INTO users
@@ -91,6 +133,9 @@ def main():
             VALUES (?, ?, ?, ?)""",
             ("security-test-user", CLIENT, "openid profile email offline_access", now),
         )
+
+def main():
+    seed_test_rows()
 
     # OAuth/OIDC metadata sanity checks: assertions are intentionally focused
     # on advertised features and do not claim full normative conformance.
@@ -152,8 +197,9 @@ def main():
     with ThreadPoolExecutor(max_workers=2) as pool:
         par_results = list(pool.map(submit_par, range(2)))
     par_statuses = [r.status_code if isinstance(r, requests.Response) else -1 for r in par_results]
+    par_ok = sum(s in (200, 201) for s in par_statuses)
     check("DPoP replay under concurrency: exactly one accepted",
-          par_statuses.count(200) == 1 and sum(s >= 400 for s in par_statuses) == 1,
+          par_ok == 1 and sum(s >= 400 for s in par_statuses) == 1,
           par_statuses)
 
     # Rotate the signing key, verify overlap publication, and ensure a token
