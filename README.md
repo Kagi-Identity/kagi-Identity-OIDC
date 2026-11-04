@@ -1,6 +1,6 @@
 # Kagi Identity
 
-![Project Logo](.logo.png)
+![Project Logo](./Kagi Identity ロゴ.png)
 
 **Kagi Identity (Kagi ID)** is a passkey-first identity and authentication service built in Rust. It provides WebAuthn-based sign-in and OpenID Connect / OAuth endpoints for applications that need an identity provider.
 
