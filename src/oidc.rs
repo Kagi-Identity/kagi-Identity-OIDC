@@ -117,6 +117,37 @@ fn scope_subset(requested: &str, allowed: &str) -> bool {
         .all(|s| allowed.iter().any(|a| a == s))
 }
 
+const SUPPORTED_ACRS: [&str; 2] = [crate::auth::ACR_PASSKEY, crate::auth::ACR_RECOVERY];
+
+fn requested_acrs(p: &AuthzParams) -> Vec<&str> {
+    p.acr_values
+        .as_deref()
+        .map(|value| {
+            value
+                .split_whitespace()
+                .filter(|v| !v.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Requested ACR values that kagi can satisfy. Unknown values are ignored: RPs
+/// commonly send a preference list, but a supported value becomes a hard
+/// requirement so we never claim an authentication level we did not perform.
+fn required_acrs(p: &AuthzParams) -> Vec<&'static str> {
+    let requested = requested_acrs(p);
+    SUPPORTED_ACRS
+        .iter()
+        .copied()
+        .filter(|supported| requested.iter().any(|value| value == supported))
+        .collect()
+}
+
+fn acr_satisfied(p: &AuthzParams, session: &Session) -> bool {
+    let required = required_acrs(p);
+    required.is_empty() || required.iter().any(|acr| *acr == session.acr)
+}
+
 // ---------------------------------------------------------------------------
 // Static endpoints
 // ---------------------------------------------------------------------------
@@ -155,7 +186,8 @@ pub async fn discovery(State(st): State<AppState>) -> Response {
             "sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "azp", "sid",
             "name", "preferred_username", "email", "email_verified"
         ],
-        "claims_parameter_supported": true,
+        "claims_parameter_supported": false,
+        "acr_values_supported": [crate::auth::ACR_PASSKEY, crate::auth::ACR_RECOVERY],
         "code_challenge_methods_supported": ["S256"],
         "request_parameter_supported": true,
         "request_uri_parameter_supported": true,
@@ -165,7 +197,7 @@ pub async fn discovery(State(st): State<AppState>) -> Response {
         "authorization_signing_alg_values_supported": ["ES256"],
         "authorization_encryption_alg_values_supported": [],
         "dpop_signing_alg_values_supported": ["ES256", "EdDSA", "RS256", "PS256"],
-        "prompt_values_supported": ["none", "login", "consent"],
+        "prompt_values_supported": ["none", "login", "consent", "select_account"],
         "require_pushed_authorization_requests": cfg.require_par,
         "tls_client_certificate_bound_access_tokens": false,
         "backchannel_logout_supported": false,
@@ -279,11 +311,27 @@ fn authorize_inner(st: &AppState, headers: &HeaderMap, query: HashMap<String, St
         (Some(s), Some(max)) => s.auth_time + max < now(),
         _ => false,
     };
-    let needs_login = session.is_none() || prompt.contains(&"login") || max_age_exceeded;
+    let acr_missing = match &session {
+        Some(s) => !acr_satisfied(&params, s),
+        None => false,
+    };
+    let needs_login = session.is_none()
+        || prompt.contains(&"login")
+        || prompt.contains(&"select_account")
+        || max_age_exceeded
+        || acr_missing;
 
     if prompt.contains(&"none") {
         if needs_login {
-            return authz_fail(st, Some(&params), "login_required", "no active session");
+            let (code, description) = if acr_missing {
+                (
+                    "unmet_authentication_requirements",
+                    "no active session satisfies the requested acr",
+                )
+            } else {
+                ("login_required", "no active session")
+            };
+            return authz_fail(st, Some(&params), code, description);
         }
         let s = session.unwrap();
         let user = match st.db.with(|c| db::load_user(c, &s.user_id)) {
@@ -468,6 +516,11 @@ fn validate_authorization_params(st: &AppState, p: &AuthzParams) -> ApiResult<Cl
             "redirect_uri is not registered for this client",
         ));
     }
+    if let Err(reason) = validate_redirect_uri(&p.redirect_uri) {
+        return Err(OauthError::invalid_request(format!(
+            "redirect_uri is not acceptable: {reason}"
+        )));
+    }
     if p.response_type != "code" {
         return Err(OauthError::invalid_request(
             "only response_type=code is supported",
@@ -602,13 +655,23 @@ fn authorization_error_redirect(
             "error_description": description,
             "state": p.state,
         });
-        let signed = st
+        let signed = match st
             .keys
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .current()
             .sign(Some("JWT"), &claims)
-            .unwrap_or_default();
+        {
+            Ok(token) => token,
+            Err(error) => {
+                eprintln!("[kagi] JARM error response signing failed: {error:#}");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Html("<!doctype html><meta charset=\"utf-8\"><title>Server error</title><h1>Internal server error</h1>"),
+                )
+                    .into_response();
+            }
+        };
         let target = if mode.starts_with("fragment") {
             build_fragment(&p.redirect_uri, &[("response", signed)])
         } else {
@@ -638,13 +701,46 @@ pub fn complete_authorization(
         _ => return authz_fail(st, Some(&params), "invalid_request", "unknown client"),
     };
 
+    if !acr_satisfied(&params, session) {
+        return authz_fail(
+            st,
+            Some(&params),
+            "unmet_authentication_requirements",
+            "the authenticated session does not satisfy the requested acr",
+        );
+    }
+
+    // Claim the flow before issuing anything. Two concurrent consent posts can
+    // both pass the CSRF check and load the same flow; only the winner of this
+    // compare-and-swap is allowed to mint an authorization code.
+    let claimed = match st.db.with(|c| {
+        Ok(c.execute(
+            "UPDATE flows SET consumed = 1
+             WHERE id = ?1 AND kind = 'authorize' AND consumed = 0 AND expires_at > ?2",
+            params![flow.id, now()],
+        )?)
+    }) {
+        Ok(changed) => changed,
+        Err(error) => {
+            eprintln!("[kagi] could not claim authorization flow: {error:#}");
+            return authz_fail(
+                st,
+                Some(&params),
+                "server_error",
+                "could not complete the authorization request",
+            );
+        }
+    };
+    if claimed != 1 {
+        return authz_fail(
+            st,
+            Some(&params),
+            "invalid_request",
+            "this authorization request was already completed or has expired",
+        );
+    }
+
     if !approve {
-        let _ = st.db.with(|c| {
-            Ok(c.execute(
-                "UPDATE flows SET consumed = 1 WHERE id = ?1",
-                params![flow.id],
-            )?)
-        });
         return authorization_error_redirect(
             st,
             &client,
@@ -690,12 +786,6 @@ pub fn complete_authorization(
             "could not store the code",
         );
     }
-    let _ = st.db.with(|c| {
-        Ok(c.execute(
-            "UPDATE flows SET consumed = 1 WHERE id = ?1",
-            params![flow.id],
-        )?)
-    });
 
     authorization_success(st, &client, &params, &code, session)
 }
@@ -747,6 +837,15 @@ fn authorization_success(
     params.push(("iss", st.cfg.issuer.clone()));
 
     if mode == "form_post" {
+        let Some(action) = uri_origin(&p.redirect_uri) else {
+            return authz_fail(
+                st,
+                Some(p),
+                "invalid_request",
+                "redirect_uri is not a valid absolute URI",
+            );
+        };
+        let nonce = random_token(18);
         let inputs: String = params
             .iter()
             .map(|(k, v)| {
@@ -761,10 +860,30 @@ fn authorization_success(
             "<!doctype html><meta charset=\"utf-8\"><title>Redirecting…</title>\
              <form id=\"f\" method=\"post\" action=\"{}\">{inputs}\
              <noscript><button type=\"submit\">Continue</button></noscript></form>\
-             <script>document.getElementById('f').submit()</script>",
-            esc(&p.redirect_uri)
+             <script nonce=\"{}\">document.getElementById('f').submit()</script>",
+            esc(&p.redirect_uri),
+            esc(&nonce)
         );
-        return ([(header::CACHE_CONTROL, "no-store")], Html(body)).into_response();
+        // The default document CSP allows scripts only from 'self' and forms
+        // only to 'self'. A form_post response needs exactly one inline script
+        // and a cross-origin form target, so scope a dedicated policy to this
+        // response instead of weakening the global one.
+        let csp = format!(
+            "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'none'; img-src 'none'; \
+             connect-src 'none'; font-src 'none'; base-uri 'none'; form-action {action}; \
+             frame-ancestors 'none'; object-src 'none'"
+        );
+        let header_value = match HeaderValue::from_str(&csp) {
+            Ok(value) => value,
+            Err(_) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "invalid response policy")
+                    .into_response()
+            }
+        };
+        let mut res = ([(header::CACHE_CONTROL, "no-store")], Html(body)).into_response();
+        res.headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, header_value);
+        return res;
     }
 
     let target = if mode == "fragment" {
