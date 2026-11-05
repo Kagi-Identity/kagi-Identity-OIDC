@@ -201,6 +201,69 @@ pub fn normalize_htu(url: &str) -> String {
     format!("{scheme}://{host}{path}")
 }
 
+/// True when `host` (without brackets) is a loopback name or address.
+pub fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Validate an OAuth redirect target before it is registered or used.
+///
+/// RPs must use HTTPS. Plain HTTP is accepted only for loopback hosts, which is
+/// the RFC 8252 native-application exception. Fragments, user information,
+/// whitespace and control characters are always rejected: `http://localhost`
+/// must never be accepted as a prefix for `http://localhost.evil.example`.
+pub fn validate_redirect_uri(uri: &str) -> Result<(), &'static str> {
+    if uri.is_empty() {
+        return Err("redirect_uri must not be empty");
+    }
+    if uri
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err("redirect_uri must not contain whitespace or control characters");
+    }
+    if uri.contains('#') {
+        return Err("redirect_uri must not contain a fragment");
+    }
+    let parsed = uri
+        .parse::<axum::http::Uri>()
+        .map_err(|_| "redirect_uri must be an absolute URI")?;
+    let scheme = parsed
+        .scheme_str()
+        .ok_or("redirect_uri must be an absolute URI")?;
+    let authority = parsed
+        .authority()
+        .ok_or("redirect_uri must include a host")?;
+    if authority.as_str().contains('@') {
+        return Err("redirect_uri must not contain user information");
+    }
+    let host = authority.host();
+    if host.is_empty() {
+        return Err("redirect_uri must include a host");
+    }
+    match scheme {
+        "https" => Ok(()),
+        "http" if is_loopback_host(host) => Ok(()),
+        "http" => Err("http redirect_uri is only allowed for loopback hosts"),
+        _ => Err("redirect_uri must use https"),
+    }
+}
+
+/// `scheme://authority` for a validated absolute URI, used for CSP `form-action`.
+pub fn uri_origin(uri: &str) -> Option<String> {
+    let parsed = uri.parse::<axum::http::Uri>().ok()?;
+    let scheme = parsed.scheme_str()?;
+    let authority = parsed.authority()?.as_str();
+    if authority.contains(['\'', ';', '"']) {
+        return None;
+    }
+    Some(format!("{scheme}://{authority}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +278,50 @@ mod tests {
             normalize_htu("https://id.example.com:443/authorize"),
             "https://id.example.com/authorize"
         );
+    }
+
+    #[test]
+    fn redirect_uris_require_https_or_real_loopback_hosts() {
+        for valid in [
+            "https://app.example.com/callback",
+            "https://app.example.com:8443/cb?x=1",
+            "http://localhost:3000/callback",
+            "http://127.0.0.1/cb",
+            "http://127.42.1.9:8080/cb",
+            "http://[::1]:3000/cb",
+        ] {
+            assert!(
+                validate_redirect_uri(valid).is_ok(),
+                "rejected valid redirect_uri: {valid}"
+            );
+        }
+
+        for invalid in [
+            "http://localhost.evil.com/cb",
+            "http://127.0.0.1.evil.com/cb",
+            "http://example.com/cb",
+            "ftp://example.com/cb",
+            "javascript:alert(1)",
+            "https://user:pass@app.example.com/cb",
+            "https://app.example.com/cb#fragment",
+            "https://app.example.com/c b",
+            "/relative/callback",
+            "",
+        ] {
+            assert!(
+                validate_redirect_uri(invalid).is_err(),
+                "accepted invalid redirect_uri: {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn uri_origin_keeps_scheme_and_authority() {
+        assert_eq!(
+            uri_origin("https://app.example.com:8443/cb?x=1").as_deref(),
+            Some("https://app.example.com:8443")
+        );
+        assert_eq!(uri_origin("/relative"), None);
     }
 
     #[test]
