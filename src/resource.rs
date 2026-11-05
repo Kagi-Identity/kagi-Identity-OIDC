@@ -259,17 +259,25 @@ fn revoke_inner(
         .get("token")
         .ok_or_else(|| OauthError::invalid_request("token is required"))?;
 
-    if let Ok((_header, claims, _input, _sig)) = jose::decode_segments(token) {
-        if let Some(jti) = claims.get("jti").and_then(Value::as_str) {
-            st.db.with(|c| {
-                c.execute(
-                    "UPDATE access_tokens SET revoked = 1 WHERE jti = ?1 AND client_id = ?2",
-                    params![jti, client.id],
-                )?;
-                Ok(())
-            })?;
-            return Ok(());
+    // Only revoke a JWT after its signature, issuer, expiry and server-side
+    // state have been verified. Parsing without verification would let any
+    // authenticated client revoke an arbitrary `jti` it can guess or observe.
+    if let Ok(claims) = verify_access_token(st, token) {
+        let belongs_to_client = claims.get("client_id").and_then(Value::as_str)
+            == Some(client.id.as_str());
+        if belongs_to_client {
+            if let Some(jti) = claims.get("jti").and_then(Value::as_str) {
+                st.db.with(|c| {
+                    c.execute(
+                        "UPDATE access_tokens SET revoked = 1 WHERE jti = ?1 AND client_id = ?2",
+                        params![jti, client.id],
+                    )?;
+                    Ok(())
+                })?;
+            }
         }
+        // RFC 7009: revoking an unknown or foreign token is not an error.
+        return Ok(());
     }
 
     let hash = sha256_hex(token);
@@ -325,7 +333,9 @@ fn end_session(st: &AppState, headers: &HeaderMap, params: &HashMap<String, Stri
     let mut redirect_to: Option<String> = None;
     if let (Some(target), Some(client)) = (params.get("post_logout_redirect_uri"), client.as_ref())
     {
-        if client.post_logout_redirect_uris.iter().any(|u| u == target) {
+        if client.post_logout_redirect_uris.iter().any(|u| u == target)
+            && validate_redirect_uri(target).is_ok()
+        {
             let mut url = target.clone();
             if let Some(state) = params.get("state") {
                 url = build_url(&url, &[("state", state.clone())]);
@@ -340,7 +350,7 @@ fn end_session(st: &AppState, headers: &HeaderMap, params: &HashMap<String, Stri
         }
     }
 
-    let cookie = crate::auth::end_local_session(st, headers);
+    let cookies = crate::auth::end_local_session(st, headers);
 
     let mut res = match redirect_to {
         Some(url) => oidc::redirect_302(&url),
@@ -357,8 +367,8 @@ fn end_session(st: &AppState, headers: &HeaderMap, params: &HashMap<String, Stri
             ([(header::CACHE_CONTROL, "no-store")], Html(body)).into_response()
         }
     };
-    if let Some(value) = cookie {
-        res.headers_mut().append(header::SET_COOKIE, value);
+    for cookie in cookies {
+        res.headers_mut().append(header::SET_COOKIE, cookie);
     }
     res
 }
@@ -376,6 +386,34 @@ pub async fn register_client(
         Ok(res) => res,
         Err(e) => e.into_response(),
     }
+}
+
+/// A registered JWK Set must contain public signing keys only. Accepting a
+/// private or symmetric key would turn the client's key material into an OP
+/// secret and could allow key confusion.
+fn validate_jwks(value: &Value) -> Result<(), &'static str> {
+    let keys = value
+        .get("keys")
+        .and_then(Value::as_array)
+        .ok_or("jwks must be a JWK Set with a keys array")?;
+    if keys.is_empty() || keys.len() > 8 {
+        return Err("jwks must contain between 1 and 8 keys");
+    }
+    for key in keys {
+        if ["d", "p", "q", "dp", "dq", "qi", "k"]
+            .iter()
+            .any(|field| key.get(field).is_some())
+        {
+            return Err("jwks must contain public keys only");
+        }
+        if !matches!(
+            key.get("kty").and_then(Value::as_str),
+            Some("EC" | "RSA" | "OKP")
+        ) {
+            return Err("jwks contains an unsupported key type");
+        }
+    }
+    Ok(())
 }
 
 fn register_client_inner(st: &AppState, headers: &HeaderMap, body: &Value) -> ApiResult<Response> {
@@ -405,14 +443,21 @@ fn register_client_inner(st: &AppState, headers: &HeaderMap, body: &Value) -> Ap
         return Err(OauthError::invalid_request("redirect_uris is required"));
     }
     for uri in &redirect_uris {
-        let ok = uri.starts_with("https://")
-            || uri.starts_with("http://localhost")
-            || uri.starts_with("http://127.0.0.1");
-        if !ok || uri.contains('#') {
+        if let Err(reason) = validate_redirect_uri(uri) {
             return Err(OauthError::invalid_request(format!(
-                "redirect_uri {uri} must use https (or localhost) and must not contain a fragment"
+                "redirect_uri {uri} is invalid: {reason}"
             )));
         }
+    }
+
+    if body.get("jwks_uri").is_some() {
+        return Err(OauthError::invalid_request(
+            "jwks_uri is not supported; supply jwks inline",
+        ));
+    }
+    if let Some(jwks) = body.get("jwks") {
+        validate_jwks(jwks)
+            .map_err(|reason| OauthError::invalid_request(format!("invalid jwks: {reason}")))?;
     }
 
     let auth_method = body
@@ -428,12 +473,9 @@ fn register_client_inner(st: &AppState, headers: &HeaderMap, body: &Value) -> Ap
             "unsupported token_endpoint_auth_method",
         ));
     }
-    if auth_method == "private_key_jwt"
-        && body.get("jwks").is_none()
-        && body.get("jwks_uri").is_some()
-    {
+    if auth_method == "private_key_jwt" && body.get("jwks").is_none() {
         return Err(OauthError::invalid_request(
-            "jwks_uri is not supported; supply jwks inline",
+            "private_key_jwt requires an inline jwks",
         ));
     }
 
@@ -489,7 +531,13 @@ fn register_client_inner(st: &AppState, headers: &HeaderMap, body: &Value) -> Ap
         .get("client_name")
         .and_then(Value::as_str)
         .unwrap_or("dynamic client")
+        .trim()
         .to_string();
+    if name.is_empty() || name.chars().count() > 120 || name.chars().any(char::is_control) {
+        return Err(OauthError::invalid_request(
+            "client_name must be 1–120 printable characters",
+        ));
+    }
 
     let post_logout: Vec<String> = body
         .get("post_logout_redirect_uris")
@@ -500,6 +548,13 @@ fn register_client_inner(st: &AppState, headers: &HeaderMap, body: &Value) -> Ap
                 .collect()
         })
         .unwrap_or_default();
+    for uri in &post_logout {
+        if let Err(reason) = validate_redirect_uri(uri) {
+            return Err(OauthError::invalid_request(format!(
+                "post_logout_redirect_uri {uri} is invalid: {reason}"
+            )));
+        }
+    }
 
     st.db.with(|c| {
         c.execute(
