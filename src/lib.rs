@@ -497,14 +497,18 @@ async fn harden(State(st): State<AppState>, mut req: Request, next: Next) -> Res
         HeaderValue::from_static("none"),
     );
     headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
-             connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; \
-             frame-ancestors 'none'; object-src 'none'; manifest-src 'self'",
-        ),
-    );
+    // A handler may scope a stricter policy to one response (for example the
+    // nonce-based CSP used by `form_post`); do not clobber it here.
+    if !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
+                 connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; \
+                 frame-ancestors 'none'; object-src 'none'; manifest-src 'self'",
+            ),
+        );
+    }
     headers.insert(
         HeaderName::from_static("cross-origin-opener-policy"),
         HeaderValue::from_static("same-origin"),

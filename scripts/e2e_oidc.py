@@ -123,6 +123,17 @@ s, h, j, b = form_post("/token", {"grant_type": "authorization_code", "code": co
 check("code exchange", s == 200 and "access_token" in j and "id_token" in j and "refresh_token" in j, b)
 at, idt, rt = j["access_token"], j["id_token"], j["refresh_token"]
 
+# ---------------------------------------------------------------- form_post CSP
+# The browser must be allowed to run the auto-submit script and POST to the RP
+# even though the global CSP restricts both to 'self'.
+fp = {**authz, "response_mode": "form_post", "prompt": "none", "state": "fp-state"}
+s, h, b = req("GET", "/authorize?" + up.urlencode(fp))
+page = b.decode()
+csp = h.get("Content-Security-Policy", "")
+check("form_post returns an auto-submit page", s == 200 and "<form" in page and "<script" in page, (s, b[:200]))
+check("form_post script carries a nonce", "nonce=" in page and "script-src 'nonce-" in csp, (page[:300], csp))
+check("form_post CSP allows the RP origin", "form-action http://localhost:3000" in csp, csp)
+
 # verify id_token signature against JWKS
 hdr_b, pay_b, sig_b = idt.split(".")
 hd = json.loads(unb64(hdr_b)); cl = json.loads(unb64(pay_b)); sig = unb64(sig_b)

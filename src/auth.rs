@@ -19,7 +19,12 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 pub const COOKIE_NAME: &str = "kagi_sid";
+/// `__Host-` prefixed name used when the cookie is marked `Secure`. The prefix
+/// makes the browser reject a cookie injected over http or from a sibling
+/// subdomain.
+pub const HOST_COOKIE_NAME: &str = "__Host-kagi_sid";
 pub const ACR_PASSKEY: &str = "urn:kagi:acr:passkey";
+pub const ACR_RECOVERY: &str = "urn:kagi:acr:recovery";
 
 fn session_expired(session: &Session, now: i64, idle_ttl: i64) -> bool {
     let last_seen_at = if session.last_seen_at > 0 {
@@ -54,7 +59,11 @@ fn audit(st: &AppState, user_id: Option<&str>, kind: &str, detail: &str, headers
 
 pub fn session_from_headers(st: &AppState, headers: &HeaderMap) -> Option<Session> {
     let cookies = parse_cookies(headers);
-    let sid = cookies.get(COOKIE_NAME)?;
+    // Prefer the hardened cookie, but keep reading the legacy name so an
+    // upgrade does not sign every existing browser out.
+    let sid = cookies
+        .get(HOST_COOKIE_NAME)
+        .or_else(|| cookies.get(COOKIE_NAME))?;
     let hash = sha256_hex(sid);
     let now = now();
 
@@ -94,6 +103,7 @@ fn create_session(
     st: &AppState,
     user_id: &str,
     amr: Vec<String>,
+    acr: &str,
     headers: &HeaderMap,
 ) -> anyhow::Result<(String, Session)> {
     let sid = random_token(32);
@@ -111,7 +121,7 @@ fn create_session(
                 user_id,
                 auth_time,
                 serde_json::to_string(&amr).unwrap_or_else(|_| "[]".into()),
-                ACR_PASSKEY,
+                acr,
                 expires_at,
                 auth_time,
                 auth_time,
@@ -128,7 +138,7 @@ fn create_session(
             user_id: user_id.to_string(),
             auth_time,
             amr,
-            acr: ACR_PASSKEY.into(),
+            acr: acr.into(),
             expires_at,
             created_at: auth_time,
             last_seen_at: auth_time,
@@ -138,40 +148,60 @@ fn create_session(
     ))
 }
 
+fn session_cookie_name(st: &AppState) -> &'static str {
+    if st.cfg.cookie_secure {
+        HOST_COOKIE_NAME
+    } else {
+        COOKIE_NAME
+    }
+}
+
+fn build_cookie(st: &AppState, name: &str, sid: &str, max_age: i64) -> HeaderValue {
+    let mut value = format!("{name}={sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}");
+    if st.cfg.cookie_secure || name == HOST_COOKIE_NAME {
+        value.push_str("; Secure");
+    }
+    HeaderValue::from_str(&value).expect("cookie value is valid ASCII")
+}
+
 fn session_cookie(st: &AppState, sid: &str) -> HeaderValue {
-    let mut value = format!(
-        "{COOKIE_NAME}={sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
-        st.cfg.session_ttl
-    );
-    if st.cfg.cookie_secure {
-        value.push_str("; Secure");
-    }
-    HeaderValue::from_str(&value).expect("cookie value is valid ASCII")
+    build_cookie(st, session_cookie_name(st), sid, st.cfg.session_ttl)
 }
 
-fn cleared_cookie(st: &AppState) -> HeaderValue {
-    let mut value = format!("{COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
-    if st.cfg.cookie_secure {
-        value.push_str("; Secure");
-    }
-    HeaderValue::from_str(&value).expect("cookie value is valid ASCII")
+/// Clear both the hardened and the legacy cookie names so an upgrade or a
+/// misconfigured `Secure` flag cannot leave a usable session behind.
+fn cleared_cookies(st: &AppState) -> Vec<HeaderValue> {
+    [COOKIE_NAME, HOST_COOKIE_NAME]
+        .iter()
+        .map(|name| build_cookie(st, name, "", 0))
+        .collect()
 }
 
-/// Delete the server-side session, revoke tokens issued from it and return a
-/// Set-Cookie that clears the browser cookie.
-pub fn end_local_session(st: &AppState, headers: &HeaderMap) -> Option<HeaderValue> {
+/// Delete the server-side session(s), revoke tokens issued from them and
+/// return `Set-Cookie` headers that clear the browser cookies.
+pub fn end_local_session(st: &AppState, headers: &HeaderMap) -> Vec<HeaderValue> {
     let cookies = parse_cookies(headers);
-    if let Some(sid) = cookies.get(COOKIE_NAME) {
-        let hash = sha256_hex(sid);
+    let mut hashes: Vec<String> = Vec::new();
+    for name in [HOST_COOKIE_NAME, COOKIE_NAME] {
+        if let Some(sid) = cookies.get(name) {
+            let hash = sha256_hex(sid);
+            if !hashes.contains(&hash) {
+                hashes.push(hash);
+            }
+        }
+    }
+    if !hashes.is_empty() {
         // Logout must revoke server-tracked JWTs as well as deleting the browser
         // session. Otherwise a copied access token could remain active until exp.
         let _ = st.db.tx(|tx| {
-            db::revoke_session_tokens(tx, &hash)?;
-            tx.execute("DELETE FROM sessions WHERE id = ?1", params![hash])?;
+            for hash in &hashes {
+                db::revoke_session_tokens(tx, hash)?;
+                tx.execute("DELETE FROM sessions WHERE id = ?1", params![hash])?;
+            }
             Ok(())
         });
     }
-    Some(cleared_cookie(st))
+    cleared_cookies(st)
 }
 
 fn attach_cookie(mut res: Response, cookie: HeaderValue) -> Response {
@@ -373,7 +403,10 @@ fn login_verify_inner(
 
     let outcome =
         webauthn::verify_authentication(&st.cfg, &challenge, &req.credential, &credential)
-            .map_err(|e| OauthError::invalid_request(format!("認証に失敗しました: {e}")))?;
+            .map_err(|error| {
+                eprintln!("[kagi] WebAuthn authentication failed: {error:#}");
+                OauthError::invalid_request("認証に失敗しました")
+            })?;
 
     // Consume the challenge and update the credential counter in one transaction.
     // The conditional update makes the ceremony single-use even when two valid
@@ -414,7 +447,7 @@ fn login_verify_inner(
     } else {
         vec!["pop".to_string(), "hwk".to_string()]
     };
-    let (sid, _session) = create_session(st, &user.id, amr, headers)
+    let (sid, _session) = create_session(st, &user.id, amr, ACR_PASSKEY, headers)
         .map_err(internal("creating a session"))?;
 
     audit(
@@ -598,7 +631,10 @@ fn signup_verify_inner(
     }
 
     let new = webauthn::verify_registration(&st.cfg, &challenge, &user, &req.credential)
-        .map_err(|e| OauthError::invalid_request(format!("パスキーの登録に失敗しました: {e}")))?;
+        .map_err(|error| {
+            eprintln!("[kagi] WebAuthn registration failed: {error:#}");
+            OauthError::invalid_request("パスキーの登録に失敗しました")
+        })?;
 
     st.db
         .tx(|tx| {
@@ -654,7 +690,7 @@ fn signup_verify_inner(
     } else {
         vec!["pop".to_string(), "hwk".to_string()]
     };
-    let (sid, _) = create_session(st, &user.id, amr, headers)
+    let (sid, _) = create_session(st, &user.id, amr, ACR_PASSKEY, headers)
         .map_err(internal("creating a session"))?;
 
     audit(
@@ -847,10 +883,10 @@ pub async fn account_logout(State(st): State<AppState>, headers: HeaderMap) -> R
             &headers,
         );
     }
-    let cookie = end_local_session(&st, &headers);
+    let cookies = end_local_session(&st, &headers);
     let mut res = oidc::redirect_302("/login");
-    if let Some(c) = cookie {
-        res.headers_mut().append(header::SET_COOKIE, c);
+    for cookie in cookies {
+        res.headers_mut().append(header::SET_COOKIE, cookie);
     }
     res
 }
@@ -931,7 +967,10 @@ fn add_passkey_verify_inner(
     }
 
     let new = webauthn::verify_registration(&st.cfg, &challenge, &user, &req.credential)
-        .map_err(|e| OauthError::invalid_request(format!("パスキーの登録に失敗しました: {e}")))?;
+        .map_err(|error| {
+            eprintln!("[kagi] WebAuthn registration failed: {error:#}");
+            OauthError::invalid_request("パスキーの登録に失敗しました")
+        })?;
 
     st.db
         .tx(|tx| {
@@ -1220,8 +1259,9 @@ fn revoke_session_inner(
     );
     let mut res = Json(json!({ "ok": true, "current": req.id == current.id })).into_response();
     if req.id == current.id {
-        res.headers_mut()
-            .append(header::SET_COOKIE, cleared_cookie(st));
+        for cookie in cleared_cookies(st) {
+            res.headers_mut().append(header::SET_COOKIE, cookie);
+        }
     }
     Ok(res)
 }
@@ -1283,8 +1323,14 @@ fn revoke_consent_inner(
     req: ConsentRef,
 ) -> Result<Response, OauthError> {
     let (_session, user) = require_session(st, headers)?;
-    st.db
-        .with(|c| db::delete_consent(c, &user.id, &req.client_id))?;
+    st.db.tx(|tx| {
+        db::delete_consent(tx, &user.id, &req.client_id)?;
+        // Withdrawing consent must also invalidate everything already issued
+        // to that client. Otherwise a refresh token would keep the grant alive
+        // despite the user having revoked it in the console.
+        db::revoke_client_tokens(tx, &user.id, &req.client_id)?;
+        Ok(())
+    })?;
     audit(
         st,
         Some(&user.id),
@@ -1404,11 +1450,17 @@ fn recover_inner(
         ));
     };
 
-    let (sid, _session) = create_session(st, &user.id, vec!["pwd".into(), "otp".into()], headers)
-        .map_err(|e| {
-            eprintln!("[kagi] recovery sign-in could not create a session: {e:#}");
-            OauthError::server_error("サインインできませんでした")
-        })?;
+    let (sid, _session) = create_session(
+        st,
+        &user.id,
+        vec!["pwd".into(), "otp".into()],
+        ACR_RECOVERY,
+        headers,
+    )
+    .map_err(|e| {
+        eprintln!("[kagi] recovery sign-in could not create a session: {e:#}");
+        OauthError::server_error("サインインできませんでした")
+    })?;
     audit(
         st,
         Some(&user.id),
@@ -1476,7 +1528,8 @@ fn delete_account_inner(
     );
     st.db.with(|c| db::delete_user(c, &user.id))?;
     let mut res = Json(json!({ "ok": true })).into_response();
-    res.headers_mut()
-        .append(header::SET_COOKIE, cleared_cookie(st));
+    for cookie in cleared_cookies(st) {
+        res.headers_mut().append(header::SET_COOKIE, cookie);
+    }
     Ok(res)
 }

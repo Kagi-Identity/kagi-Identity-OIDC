@@ -1026,9 +1026,27 @@ impl Db {
                 "DELETE FROM rate_limits WHERE window_start < ?1",
                 params![now - 3600],
             )?;
+            // Expired browser sessions may still have live access/refresh
+            // tokens. Revoke them before deleting the session rows so a
+            // forgotten tab cannot keep minting tokens after the session has
+            // timed out.
+            c.execute(
+                "UPDATE refresh_tokens SET revoked = 1
+                 WHERE session_id IN (SELECT id FROM sessions WHERE expires_at < ?1)",
+                params![now],
+            )?;
+            c.execute(
+                "UPDATE access_tokens SET revoked = 1
+                 WHERE session_id IN (SELECT id FROM sessions WHERE expires_at < ?1)",
+                params![now],
+            )?;
             c.execute("DELETE FROM sessions WHERE expires_at < ?1", params![now])?;
             c.execute(
                 "DELETE FROM refresh_tokens WHERE expires_at < ?1 AND revoked = 1",
+                params![now - 86400],
+            )?;
+            c.execute(
+                "DELETE FROM access_tokens WHERE expires_at < ?1",
                 params![now - 86400],
             )?;
             // Consumed recovery codes have no further use; keep a short grace
@@ -1384,6 +1402,24 @@ pub fn revoke_session_tokens(c: &Connection, session_id: &str) -> anyhow::Result
     c.execute(
         "UPDATE access_tokens SET revoked = 1 WHERE session_id = ?1",
         params![session_id],
+    )?;
+    Ok(())
+}
+
+/// Revoke every token a user holds for one client. Used when the user
+/// withdraws consent from the account console.
+pub fn revoke_client_tokens(
+    c: &Connection,
+    user_id: &str,
+    client_id: &str,
+) -> anyhow::Result<()> {
+    c.execute(
+        "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?1 AND client_id = ?2",
+        params![user_id, client_id],
+    )?;
+    c.execute(
+        "UPDATE access_tokens SET revoked = 1 WHERE user_id = ?1 AND client_id = ?2",
+        params![user_id, client_id],
     )?;
     Ok(())
 }
