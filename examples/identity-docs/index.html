@@ -15,9 +15,9 @@
 <div class="layout" id="top">
 <aside class="side" aria-label="ドキュメントナビゲーション">
 <input class="search" id="search" type="search" placeholder="ドキュメントを検索…" aria-label="ドキュメントを検索">
-<label>GET STARTED</label><a href="#overview" class="active">概要</a><a href="#quickstart">クイックスタート</a><a href="#first-login">初回ログイン</a>
-<label>INTEGRATION</label><a href="#oidc">OIDC / OAuth</a><a href="#client">クライアント登録</a><a href="#web">Web アプリ連携</a><a href="#troubleshooting">トラブルシューティング</a>
-<label>OPERATIONS</label><a href="#architecture">アーキテクチャ</a><a href="#deployment">本番デプロイ</a><a href="#database">データベース</a><a href="#security">セキュリティ</a><a href="#testing">テスト・検証</a><a href="#status">対応範囲と制約</a>
+<label>GET STARTED</label><a href="#overview" class="active">概要</a><a href="#quickstart">クイックスタート</a><a href="#first-login">初回ログイン</a><a href="#account">アカウント管理</a>
+<label>INTEGRATION</label><a href="#oidc">OIDC / OAuth</a><a href="#advanced">高度な機能</a><a href="#client">クライアント登録</a><a href="#web">Web アプリ連携</a><a href="#troubleshooting">トラブルシューティング</a>
+<label>OPERATIONS</label><a href="#architecture">アーキテクチャ</a><a href="#deployment">本番デプロイ</a><a href="#configuration">設定</a><a href="#database">データベース</a><a href="#security">セキュリティ</a><a href="#testing">テスト・検証</a><a href="#status">対応範囲と制約</a><a href="#license">ライセンス</a>
 </aside>
 <main class="content">
 <section class="hero" data-search="概要 overview identity authentication passkey OIDC OAuth documentation">
@@ -49,12 +49,38 @@ docker compose logs -f kagi</code></pre>
 <section class="section" id="first-login" data-search="first login passkey signup webauthn">
 <h2>初回ログイン</h2><ol><li>ローカルの <code>/signup</code> を開き、テスト用アカウントを作成します。</li><li>ブラウザーと OS が WebAuthn / パスキーに対応していることを確認します。</li><li><code>/demo</code> からログインを開始し、認可リクエストからコールバックまでの挙動を確認します。</li><li>ブラウザー開発者ツールとサーバーログを確認し、リダイレクト先・エラー・セッションの状態を照合します。</li></ol><p>ローカル HTTP と localhost を前提とした開発設定を、公開環境へそのままコピーしないでください。</p>
 </section>
+<section class="section" id="account" data-search="account console profile passkey device session consent recovery audit delete アカウント パスキー 端末 同意 リカバリー">
+<h2>アカウント管理とリカバリー</h2><p>サインイン後の <code>/</code> はパスキーだけで操作できるアカウントコンソールです。ユーザーは運営者の介入なしに、プロフィール・認証器・セッション・連携アプリを管理できます。</p>
+<div class="tablewrap"><table><thead><tr><th>機能</th><th>挙動</th></tr></thead><tbody>
+<tr><td>プロフィール</td><td>表示名とメールアドレスを編集。変更は UserInfo に即時反映される。</td></tr>
+<tr><td>パスキー</td><td>追加・名前変更・削除。最後の 1 個は削除不可（トランザクション内で原子的に検査）。上限は <code>KAGI_MAX_PASSKEYS</code>。</td></tr>
+<tr><td>端末 / セッション</td><td>端末・IP・最終アクティビティを一覧表示。個別または現在以外を一括失効。失効時はそのセッションの AT / RT も失効。</td></tr>
+<tr><td>連携アプリ</td><td>同意済みクライアントとスコープを表示。同意取消時は保存行とクライアント向けトークンを失効。</td></tr>
+<tr><td>リカバリーコード</td><td>10 個の単回使用コードを一度だけ表示。使用時に原子的に消費。再生成で旧コードを全無効化。</td></tr>
+<tr><td>セキュリティイベント</td><td>サインイン、失敗、パスキー変更、セッション失効を監査ログから表示。</td></tr>
+<tr><td>アカウント削除</td><td>ユーザー名を再入力して削除。パスキー・セッション・トークン・同意を削除し、監査証跡は保持。</td></tr>
+</tbody></table></div>
+<h3>リカバリーコードの設計</h3><p>保存されるのは、正規化したコードとユーザー ID に対する反復 SHA-256 ダイジェスト（20,000 回）のみです。50 ビットの人力入力コードを DB 漏洩から守るための措置で、消費は <code>used_at IS NULL</code> を条件とする単一の原子的 <code>UPDATE</code> で行います。</p>
+<p>リカバリーで作成したセッションの <code>acr</code> は <code>urn:kagi:acr:recovery</code>、<code>amr</code> は <code>["pwd","otp"]</code> です。パスキー認証を装わないため、<code>acr_values=urn:kagi:acr:passkey</code> を要求する RP はこのセッションで認可できません（<code>unmet_authentication_requirements</code>）。</p>
+</section>
 <section class="section" id="oidc" data-search="oidc oauth authorization code pkce discovery jwks userinfo">
 <h2>OIDC / OAuth の流れ</h2><p>基本的な Web アプリ連携では、Authorization Code Flow と PKCE（S256）を使用します。クライアントは状態値を生成してリダイレクトし、認証後に登録済みのコールバックへ戻ります。</p>
 <div class="flow"><div><b>1. RP → IdP</b><span>Discovery を取得し、認可リクエストを生成</span></div><div><b>2. ユーザー認証</b><span>IdP 側でパスキー等を使って認証</span></div><div><b>3. コールバック</b><span>code と state を検証し、サーバー側でトークン交換</span></div></div>
 <h3>Discovery と JWKS を確認する</h3><pre><code>curl -fsS https://YOUR-ISSUER/.well-known/openid-configuration
 curl -fsS https://YOUR-ISSUER/jwks.json</code></pre>
 <p><code>issuer</code> は構成した公開 Issuer と完全一致する必要があります。JWKS が取得できることだけでは、トークンの署名・audience・issuer・期限などの検証が正しいことを意味しません。</p>
+</section>
+<section class="section" id="advanced" data-search="par dpop jar jarm fapi private_key_jwt acr client authentication 高度な 機能">
+<h2>高度な OIDC / FAPI 機能</h2><p>Kagi Identity は FAPI 2.0 を意識した高度な機能を実装しています。ただし、機能の存在は FAPI 2.0 適合を意味しません。対象プロファイルの適合テストを別途実施してください。</p>
+<div class="tablewrap"><table><thead><tr><th>機能</th><th>用途と確認点</th></tr></thead><tbody>
+<tr><td>PAR（RFC 9126）</td><td><code>POST /par</code> で認可パラメーターを事前送信し、<code>request_uri</code> を <code>/authorize</code> に渡す。<code>KAGI_REQUIRE_PAR=1</code> で必須化。成功時は <strong>201 Created</strong>。</td></tr>
+<tr><td>DPoP（RFC 9449）</td><td><code>typ=dpop+jwt</code>、<code>htm</code> / <code>htu</code> / <code>iat</code> / <code>jti</code> を検証。<code>dpop_jkt</code> をコード発行時に束縛し、交換時に照合。<code>/userinfo</code> は <code>ath</code> 付き証明を要求。</td></tr>
+<tr><td>JAR（RFC 9101）</td><td>署名済み <code>request</code> オブジェクト。RP の JWKS で署名・<code>typ=oauth-authz-req+jwt</code> を検証。</td></tr>
+<tr><td>JARM</td><td><code>response_mode=jwt</code> / <code>query.jwt</code> / <code>fragment.jwt</code>。認可レスポンスを署名済み JWT で返す。</td></tr>
+<tr><td>クライアント認証</td><td><code>client_secret_basic</code>、<code>client_secret_post</code>、<code>private_key_jwt</code>、パブリッククライアント。<code>private_key_jwt</code> はインラインの公開 JWKS が必要。</td></tr>
+<tr><td>ACR</td><td><code>acr_values_supported</code> は <code>urn:kagi:acr:passkey</code> と <code>urn:kagi:acr:recovery</code>。要求に合わないセッションは <code>unmet_authentication_requirements</code>。</td></tr>
+</tbody></table></div>
+<div class="notice"><strong>DPoP の注意</strong><br>DPoP 束縛トークンを <code>Bearer</code> で提示した場合（またはその逆）は RFC 9449 §7.1 に従い 401 を返します。リフレッシュトークンもローテーションされ、古いトークンの再利用はファミリー全体の失効につながります。</div>
 </section>
 <section class="section" id="client" data-search="client registration redirect uri registration token">
 <h2>クライアント登録</h2><p>RP の Client ID とコールバック URL は Identity 側に登録します。URL はプロトコル・ホスト・パスを含めて完全一致させ、ワイルドカードや任意の転送先を許可しないでください。</p>
@@ -88,6 +114,45 @@ curl -fsS https://YOUR-ISSUER/jwks.json</code></pre>
 </section>
 <section class="section" id="database" data-search="database sqlite postgres supabase persistent data">
 <h2>データベースと永続性</h2><p>SQLite はローカル開発に便利ですが、Vercel のエフェメラルな実行環境に保存したファイルが永続化されるとは限りません。プロセス再起動やインスタンス切り替えで DB や署名鍵が失われる構成は、認証基盤に適しません。</p><ul><li>ホスト環境の永続 DB を使用し、デプロイをまたいだ読み書きをテストする。</li><li>DB バックアップには署名鍵等の機密情報が含まれる可能性があるため、暗号化とアクセス制限を行う。</li><li>複数インスタンス構成では、DB だけでなくセッション、レート制限、リプレイ防止状態の共有方法も確認する。</li><li>バックアップからの復元と鍵ローテーションを実際に演習する。</li></ul>
+<h3>Supabase / PostgreSQL</h3>
+<pre><code>export KAGI_DATABASE_URL='postgresql://postgres.&lt;ref&gt;:&lt;password&gt;@aws-0-&lt;region&gt;.pooler.supabase.com:5432/postgres?sslmode=require'
+export KAGI_ISSUER=https://id.example.com
+cargo run --release</code></pre>
+<ul><li><code>supabase/schema.sql</code> がスキーマの単一情報源です。初回デプロイ前に一度だけ適用してください。</li><li>真偽値は SQLite と PostgreSQL の両方で同じ 64 ビット整数バインディングを使えるよう <code>BIGINT</code>（0/1）で保存します。</li><li>Kagi は service role / postgres ユーザーで接続し RLS をバイパスします。Supabase の anon / authenticated キーでこれらのテーブルを直接公開しないでください。</li><li>署名鍵は DB に保存されるため、バックアップに鍵素材が含まれます。KMS / HSM を検討してください。</li><li>サーバーレス本番ではスキーマを手動適用し、<code>KAGI_AUTO_MIGRATE=0</code> にします。</li></ul>
+</section>
+<section class="section" id="configuration" data-search="configuration environment variables config settings 設定 環境変数">
+<h2>設定リファレンス</h2><p>すべての設定は起動時に読み込まれます。変更後は再起動が必要です。秘密情報はソースコードや <code>.env</code> のコミットで管理せず、秘密管理領域に置いてください。</p>
+<div class="tablewrap"><table><thead><tr><th>変数</th><th>既定値 / 意味</th></tr></thead><tbody>
+<tr><td><code>KAGI_ENV</code></td><td><code>development</code>。本番は <code>production</code> で、HTTPS・PostgreSQL・Secure Cookie・PAR・信頼済みプロキシ・レート制限・デモ無効などが必須になる。</td></tr>
+<tr><td><code>KAGI_ISSUER</code></td><td><code>http://localhost:8080</code>。公開 Issuer。パス・クエリ・末尾スラッシュを含めない。</td></tr>
+<tr><td><code>KAGI_ORIGIN</code></td><td>Issuer と同じ。WebAuthn 検証で期待するブラウザーオリジン。</td></tr>
+<tr><td><code>KAGI_RP_ID</code></td><td>Issuer のホスト。スキームもポートも含めないベアホスト名。</td></tr>
+<tr><td><code>KAGI_DB</code> / <code>KAGI_DATABASE_URL</code></td><td>SQLite パス、または PostgreSQL / Supabase 接続文字列。後者が優先。</td></tr>
+<tr><td><code>KAGI_REQUIRE_PAR</code> / <code>KAGI_REQUIRE_DPOP</code></td><td>既定 <code>0</code>。本番では <code>1</code> を検討。適合の証明ではない。</td></tr>
+<tr><td><code>KAGI_ADMIN_TOKEN</code> / <code>KAGI_REGISTRATION_TOKEN</code></td><td>管理・登録用の Bearer トークン。未設定で該当機能を無効化。本番は 32 文字以上の別値。</td></tr>
+<tr><td><code>KAGI_CORS_ORIGINS</code></td><td>API を呼べる正確な HTTPS オリジンのカンマ区切り。ワイルドカード不可。</td></tr>
+<tr><td><code>KAGI_TRUST_PROXY</code></td><td>既定 <code>0</code>。<code>X-Forwarded-For</code> を上書きするプロキシの直後でのみ <code>1</code>。</td></tr>
+<tr><td><code>KAGI_RECOVERY_ENABLED</code> / <code>KAGI_MAX_PASSKEYS</code></td><td>リカバリーコードの可否、パスキー上限（既定 10）。</td></tr>
+<tr><td><code>KAGI_SESSION_TTL</code> / <code>KAGI_SESSION_IDLE_TTL</code></td><td>セッションの絶対期限（既定 8 時間）とアイドル期限（既定 2 時間）。</td></tr>
+<tr><td><code>KAGI_ACCESS_TTL</code> / <code>KAGI_REFRESH_TTL</code></td><td>AT（既定 5 分）と RT（既定 30 日）の期限。</td></tr>
+<tr><td><code>KAGI_AUDIT_RETENTION_DAYS</code></td><td>監査イベント保持日数。既定 90、<code>0</code> で無期限。</td></tr>
+</tbody></table></div>
+<p>本番の出発点:</p>
+<pre><code>KAGI_ENV=production
+KAGI_ISSUER=https://id.example.com
+KAGI_ORIGIN=https://id.example.com
+KAGI_RP_ID=example.com
+KAGI_COOKIE_SECURE=1
+KAGI_HSTS=1
+KAGI_SEED_DEMO=0
+KAGI_ALLOW_SIGNUP=0
+KAGI_REQUIRE_PAR=1
+KAGI_REQUIRE_DPOP=1
+KAGI_RATE_LIMIT=1
+KAGI_TRUST_PROXY=1
+KAGI_AUTO_MIGRATE=0
+KAGI_CORS_ORIGINS=https://your-rp.example.com</code></pre>
+<p>完全な一覧と説明は <code>docs/CONFIGURATION.md</code>（日本語: <code>docs/ja/CONFIGURATION.md</code>）を参照してください。</p>
 </section>
 <section class="section" id="security" data-search="security threat model csrf csp secrets cookies tokens webauthn">
 <h2>セキュリティチェックリスト</h2><p>以下は公開前の最低限の確認項目です。チェックを付けても自動監査や認証取得を意味するものではありません。</p>
@@ -101,23 +166,54 @@ curl -fsS https://YOUR-ISSUER/jwks.json</code></pre>
 <label style="display:block;padding:10px 0;border-bottom:1px solid #eee;font-size:13px"><input type="checkbox"> 失敗ログ、アラート、レート制限、インシデント対応を準備した</label>
 <label style="display:block;padding:10px 0;border-bottom:1px solid #eee;font-size:13px"><input type="checkbox"> 外部セキュリティレビューと対象プロファイルの適合テストを計画した</label>
 </div>
+<h3>実装されている主な防御</h3>
+<div class="tablewrap"><table><thead><tr><th>領域</th><th>防御</th></tr></thead><tbody>
+<tr><td>認可</td><td>redirect URI 完全一致、PKCE S256 必須、state / nonce、RFC 9207 <code>iss</code></td></tr>
+<tr><td>同意</td><td>CSRF トークン、Origin + <code>Sec-Fetch-Site</code>、フローの原子的 CAS で二重コード発行を防止</td></tr>
+<tr><td>認証</td><td>challenge / origin / RP ID / UP / UV 検証、署名カウンタによるクローン検出、最後のパスキー削除禁止</td></tr>
+<tr><td>セッション</td><td>不透明 ID の SHA-256 保存、HttpOnly + SameSite=Lax、HTTPS では <code>__Host-</code> Cookie、絶対 / アイドル期限</td></tr>
+<tr><td>トークン</td><td>ES256 <code>at+jwt</code>、短命 AT、RT ローテーションと再利用検出、保存時 SHA-256</td></tr>
+<tr><td>DPoP</td><td><code>htm</code> / <code>htu</code> / <code>iat</code> / <code>jti</code> 検証、リプレイキャッシュ、コード発行時の <code>dpop_jkt</code> 束縛</td></tr>
+<tr><td>失効</td><td>署名・issuer・期限・DB 状態を検証してから <code>/revoke</code>。セッション / 同意取消時のトークン失効</td></tr>
+<tr><td>登録</td><td>HTTPS / 実ループバック限定の URI 検証、秘密 JWK と <code>jwks_uri</code> の拒否、サイズ・名前制限</td></tr>
+<tr><td>ブラウザー</td><td>CSP（form_post は nonce + form-action を RP に限定）、HSTS、COOP / CORP、Permissions-Policy</td></tr>
+<tr><td>エラー</td><td>内部 DB / 署名 / WebAuthn エラーはログのみ。クライアントには汎用エラーを返す</td></tr>
+<tr><td>可用性</td><td>共有レート制限、リクエストサイズ制限、<code>/readyz</code> の DB 検査</td></tr>
+</tbody></table></div>
+<div class="notice"><strong>既知の制約</strong><br>正式な OAuth / OIDC / WebAuthn / FAPI 認証は未取得です。署名鍵はデータベースに保存されるためバックアップに鍵素材が含まれます。高保証用途では KMS / HSM、独立監査、対象プロファイルの適合テストが必要です。</div>
 </section>
 <section class="section" id="testing" data-search="testing cargo check clippy test e2e smoke deployment">
 <h2>テストと検証</h2><h3>Rust 品質チェック</h3><pre><code>cargo check --locked --all-targets
 cargo test --locked --all-targets
 cargo clippy --locked --all-targets
 cargo build --locked --release</code></pre><h3>実環境の確認順</h3><ol><li>デプロイが READY であることを確認。</li><li>ヘルスチェックとログでサーバーが起動し続けていることを確認。</li><li>Discovery の JSON、issuer、JWKS の形式と到達性を確認。</li><li>テスト用 RP クライアントで登録、認証、コールバック、UserInfo を検証。</li><li>無効な state / nonce、redirect URI 不一致、期限切れトークン、リプレイ等を検証。</li><li>DB 再起動耐性、バックアップ復元、鍵ローテーションを検証。</li></ol><p>CI の成功は、その CI で実行された範囲のみを証明します。実ブラウザー・実ホスト・本番データでの動作を自動的に保証しません。</p>
+<h3>E2E スイート</h3>
+<div class="tablewrap"><table><thead><tr><th>スクリプト</th><th>主な対象</th></tr></thead><tbody>
+<tr><td><code>e2e_oidc.py</code></td><td>PAR、同意、PKCE、トークン、UserInfo、Introspection、RT ローテーション / 再利用検出、失効、DPoP、form_post CSP</td></tr>
+<tr><td><code>e2e_advanced.py</code></td><td>JARM、フローをまたぐ DPoP 鍵継続、CORS プリフライト、max_age</td></tr>
+<tr><td><code>e2e_webauthn.py</code></td><td>ソフトウェア認証器による登録 / サインイン、challenge / origin / 署名 / カウンタ検証</td></tr>
+<tr><td><code>e2e_admin.py</code></td><td>動的登録、private_key_jwt、JAR、鍵ローテーション、危険な redirect / JWK / post-logout URI の拒否</td></tr>
+<tr><td><code>e2e_account.py</code></td><td>プロフィール、パスキー管理、セッション / 同意失効、リカバリー、アカウント削除</td></tr>
+<tr><td><code>e2e_security_races.py</code></td><td>同時コード交換、同時 DPoP リプレイ、鍵ローテーション、Discovery、同時同意でコード 1 個、ACR 強制</td></tr>
+<tr><td><code>e2e_rate_limit.py</code></td><td>共有レート制限と HTTP 429 / Retry-After</td></tr>
+</tbody></table></div>
+<p>SQLite と PostgreSQL の両方で実行できます。レート制限カウンタは DB 共有のため、スイートごとに新しいデータベースを作成してください。複数サーバーを同時起動するとポート 8080 を奪い合い誤検知します。E2E は 1 つずつ順次実行してください。</p>
 </section>
 <section class="section" id="troubleshooting" data-search="troubleshooting errors cors 400 401 403 redirect uri database sqlite">
 <h2>トラブルシューティング</h2>
-<div class="tablewrap"><table><thead><tr><th>症状</th><th>確認すること</th></tr></thead><tbody><tr><td>Discovery に接続できない</td><td>Issuer の HTTPS、DNS、TLS、ホスト側の認証保護、サーバーの起動状態を確認。</td></tr><tr><td>issuer 不一致</td><td>末尾スラッシュや別ドメイン、Preview URL と本番 URL の混同を確認。</td></tr><tr><td>JWKS が空または失敗</td><td>DB に鍵が存在するか、初期化・永続化が成功したかを確認。</td></tr><tr><td>redirect_uri エラー</td><td>登録値と要求値がスキーム・ホスト・パスまで完全一致しているか確認。</td></tr><tr><td>パスキー認証に失敗</td><td>RP ID とブラウザー Origin、HTTPS、ユーザー認証器の状態を確認。</td></tr><tr><td>再デプロイ後にログイン不能</td><td>DB・署名鍵が永続化されているか、インスタンス間で共有されているか確認。</td></tr><tr><td>ブラウザーから SDK を取得できない</td><td>SDK URL、CORS、CSP、ネットワーク、Identity サーバーの配信状態を確認。</td></tr></tbody></table></div>
+<div class="tablewrap"><table><thead><tr><th>症状</th><th>確認すること</th></tr></thead><tbody><tr><td>Discovery に接続できない</td><td>Issuer の HTTPS、DNS、TLS、ホスト側の認証保護、サーバーの起動状態を確認。</td></tr><tr><td>issuer 不一致</td><td>末尾スラッシュや別ドメイン、Preview URL と本番 URL の混同を確認。</td></tr><tr><td>JWKS が空または失敗</td><td>DB に鍵が存在するか、初期化・永続化が成功したかを確認。</td></tr><tr><td>redirect_uri エラー</td><td>登録値と要求値がスキーム・ホスト・パスまで完全一致しているか確認。</td></tr><tr><td>パスキー認証に失敗</td><td>RP ID とブラウザー Origin、HTTPS、ユーザー認証器の状態を確認。</td></tr><tr><td>再デプロイ後にログイン不能</td><td>DB・署名鍵が永続化されているか、インスタンス間で共有されているか確認。</td></tr><tr><td>ブラウザーから SDK を取得できない</td><td>SDK URL、CORS、CSP、ネットワーク、Identity サーバーの配信状態を確認。</td></tr><tr><td><code>unmet_authentication_requirements</code></td><td>要求した <code>acr_values</code> とセッションの ACR が一致しているか確認。リカバリーセッションは passkey を満たさない。</td></tr><tr><td><code>login_required</code> / <code>consent_required</code></td><td><code>prompt=none</code> ではアクティブセッションと保存済み同意が必要。同意取消後の再認可は対話が必要。</td></tr><tr><td>リフレッシュが突然失敗する</td><td>RT ローテーション後、古い RT を再利用していないか確認。再利用時はファミリー全体が失効する。</td></tr><tr><td>429 Too Many Requests</td><td>レート制限は DB 共有。テストごとに DB を分離し、本番ではエッジ側の制限も確認。</td></tr><tr><td>Cookie がセットされない</td><td>HTTPS では <code>__Host-</code> Cookie の条件（Secure、Path=/、Domain なし）を満たすか確認。</td></tr></tbody></table></div>
+</section>
+<section class="section" id="license" data-search="license mit open source oss ライセンス オープンソース">
+<h2>ライセンスとオープンソース</h2><p>Kagi Identity は <strong>MIT License</strong> で公開されているオープンソースソフトウェアです。全文はリポジトリ直下の <code>LICENSE</code> にあります。</p>
+<ul><li>商用利用、改変、再配布、サブライセンス、販売が可能です。</li><li>再配布時は著作権表示とライセンス全文を含めてください。</li><li>本ソフトウェアは「現状のまま」提供され、明示・黙示の保証はありません。</li><li>コントリビューションを歓迎します。変更前に <code>docs/ja/TESTING.md</code> とセキュリティポリシーを確認してください。</li></ul>
+<div class="actions"><a class="btn" href="https://github.com/akiy2009/kagi/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License 全文 ↗</a><a class="btn secondary" href="https://github.com/akiy2009/kagi" target="_blank" rel="noopener noreferrer">GitHub リポジトリ ↗</a></div>
 </section>
 <section class="section" id="status" data-search="status limitations certification conformance">
 <h2>対応範囲と制約</h2><p>リポジトリの README では、WebAuthn、OIDC / OAuth 関連エンドポイント、トークン機能、PAR / DPoP 等の高度なプロファイル機能が説明されています。ただし、機能の存在と各 RFC の全要件を満たすことは別です。</p><ul><li>正式な OAuth / OIDC / FAPI / WebAuthn 適合認証を取得したと主張しない。</li><li>テスト対象のコミット、構成、データベース、実行環境を記録する。</li><li>本番利用の判断には独立したレビューとプロファイルごとのテストを含める。</li></ul>
 <div class="actions"><a class="btn" href="https://github.com/akiy2009/kagi/tree/main/docs" target="_blank" rel="noopener noreferrer">詳細ドキュメント ↗</a><a class="btn secondary" href="https://github.com/akiy2009/kagi/issues" target="_blank" rel="noopener noreferrer">Issue を確認 ↗</a></div>
 </section>
 </main></div>
-<footer class="footer"><span>Kagi Identity · Technical documentation</span><span>Documentation is informational; verify behavior against the deployed commit.</span></footer>
+<footer class="footer"><span>Kagi Identity · Technical documentation · MIT License</span><span>Documentation is informational; verify behavior against the deployed commit.</span></footer>
 <script>
 const search=document.getElementById('search');
 const sections=[...document.querySelectorAll('[data-search]')];
