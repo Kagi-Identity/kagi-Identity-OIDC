@@ -373,7 +373,10 @@ fn login_verify_inner(
 
     let outcome =
         webauthn::verify_authentication(&st.cfg, &challenge, &req.credential, &credential)
-            .map_err(|e| OauthError::invalid_request(format!("認証に失敗しました: {e}")))?;
+            .map_err(|error| {
+                eprintln!("[kagi] WebAuthn authentication failed: {error:#}");
+                OauthError::invalid_request("認証に失敗しました")
+            })?;
 
     // Consume the challenge and update the credential counter in one transaction.
     // The conditional update makes the ceremony single-use even when two valid
@@ -598,7 +601,10 @@ fn signup_verify_inner(
     }
 
     let new = webauthn::verify_registration(&st.cfg, &challenge, &user, &req.credential)
-        .map_err(|e| OauthError::invalid_request(format!("パスキーの登録に失敗しました: {e}")))?;
+        .map_err(|error| {
+            eprintln!("[kagi] WebAuthn registration failed: {error:#}");
+            OauthError::invalid_request("パスキーの登録に失敗しました")
+        })?;
 
     st.db
         .tx(|tx| {
@@ -931,7 +937,10 @@ fn add_passkey_verify_inner(
     }
 
     let new = webauthn::verify_registration(&st.cfg, &challenge, &user, &req.credential)
-        .map_err(|e| OauthError::invalid_request(format!("パスキーの登録に失敗しました: {e}")))?;
+        .map_err(|error| {
+            eprintln!("[kagi] WebAuthn registration failed: {error:#}");
+            OauthError::invalid_request("パスキーの登録に失敗しました")
+        })?;
 
     st.db
         .tx(|tx| {
