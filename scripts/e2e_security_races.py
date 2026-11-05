@@ -21,7 +21,7 @@ import sqlite3
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import requests
 from cryptography.hazmat.primitives import hashes
@@ -134,6 +134,49 @@ def seed_test_rows():
             ("security-test-user", CLIENT, "openid profile email offline_access", now),
         )
 
+def seed_authorize_flow(csrf, payload, sid):
+    """Seed a browser session and an unconsumed authorization flow."""
+    flow_id = secrets.token_urlsafe(18)
+    session_hash = hashlib.sha256(sid.encode()).hexdigest()
+    now = int(time.time())
+    if DATABASE_URL:
+        import psycopg2
+        with psycopg2.connect(DATABASE_URL) as con, con.cursor() as cur:
+            cur.execute(
+                """INSERT INTO sessions
+                (id, user_id, auth_time, amr, acr, expires_at, created_at, last_seen_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET expires_at = excluded.expires_at,
+                  last_seen_at = excluded.last_seen_at""",
+                (session_hash, "security-test-user", now, '["passkey"]',
+                 "urn:kagi:acr:passkey", now + 3600, now, now),
+            )
+            cur.execute(
+                """INSERT INTO flows
+                (id, kind, user_id, client_id, payload, challenge, csrf,
+                 expires_at, created_at, consumed)
+                VALUES (%s, 'authorize', NULL, %s, %s, NULL, %s, %s, %s, 0)""",
+                (flow_id, CLIENT, json.dumps(payload), csrf, now + 600, now),
+            )
+        return flow_id
+    with sqlite3.connect(DB, timeout=10) as con:
+        con.execute(
+            """INSERT OR REPLACE INTO sessions
+            (id, user_id, auth_time, amr, acr, expires_at, created_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (session_hash, "security-test-user", now, '["passkey"]',
+             "urn:kagi:acr:passkey", now + 3600, now, now),
+        )
+        con.execute(
+            """INSERT INTO flows
+            (id, kind, user_id, client_id, payload, challenge, csrf,
+             expires_at, created_at, consumed)
+            VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 0)""",
+            (flow_id, "authorize", None, CLIENT, json.dumps(payload), csrf,
+             now + 600, now),
+        )
+    return flow_id
+
 def main():
     seed_test_rows()
 
@@ -149,6 +192,13 @@ def main():
               and doc.get("jwks_uri", "").startswith("http"), doc)
         check("OIDC advertises code + S256", "code" in doc.get("response_types_supported", [])
               and "S256" in doc.get("code_challenge_methods_supported", []), doc)
+        check("discovery does not advertise an unsupported claims parameter",
+              doc.get("claims_parameter_supported") is False,
+              doc.get("claims_parameter_supported"))
+        check("discovery advertises the kagi ACR values",
+              "urn:kagi:acr:passkey" in doc.get("acr_values_supported", [])
+              and "urn:kagi:acr:recovery" in doc.get("acr_values_supported", []),
+              doc.get("acr_values_supported"))
         check("OAuth metadata alias responds", requests.get(
             BASE + "/.well-known/oauth-authorization-server", timeout=5).status_code == 200)
     except Exception as exc:
@@ -174,6 +224,67 @@ def main():
             check("access token has a signing kid", bool(token_kid), token_kid)
         except Exception as exc:
             check("successful exchange returns parseable token", False, exc)
+
+    # Concurrent consent submissions must issue exactly one authorization code.
+    # Both requests pass CSRF and load the same flow; the flow CAS decides.
+    verifier_consent, challenge_consent = pkce()
+    csrf = secrets.token_urlsafe(18)
+    sid = secrets.token_urlsafe(32)
+    consent_payload = {
+        "client_id": CLIENT, "redirect_uri": REDIRECT, "response_type": "code",
+        "scope": "openid profile", "state": "consent-race",
+        "code_challenge": challenge_consent, "code_challenge_method": "S256",
+    }
+    rid = seed_authorize_flow(csrf, consent_payload, sid)
+    def submit_consent(_):
+        try:
+            return requests.post(
+                BASE + "/consent",
+                data={"rid": rid, "csrf": csrf, "decision": "allow"},
+                headers={"Cookie": "kagi_sid=" + sid},
+                allow_redirects=False, timeout=10,
+            )
+        except Exception as exc:
+            return exc
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        consent_results = list(pool.map(submit_consent, range(2)))
+    locations = [r.headers.get("Location", "") for r in consent_results
+                 if isinstance(r, requests.Response)]
+    issued_codes = [loc for loc in locations if "code=" in loc]
+    check("concurrent consent: exactly one authorization code issued",
+          len(issued_codes) == 1, locations)
+    if issued_codes:
+        issued_code = parse_qs(urlparse(issued_codes[0]).query).get("code", [""])[0]
+        exchanged = exchange(issued_code, verifier_consent)
+        check("concurrent consent: the single code is exchangeable",
+              getattr(exchanged, "status_code", -1) == 200,
+              getattr(exchanged, "text", exchanged))
+
+    # ACR values must be enforced, not merely echoed.
+    acr_params = {
+        "client_id": CLIENT, "redirect_uri": REDIRECT, "response_type": "code",
+        "scope": "openid profile", "state": "acr-test",
+        "code_challenge": pkce()[1], "code_challenge_method": "S256",
+        "prompt": "none",
+    }
+    r = requests.get(BASE + "/authorize",
+                     params={**acr_params, "acr_values": "urn:kagi:acr:recovery"},
+                     headers={"Cookie": "kagi_sid=" + sid},
+                     allow_redirects=False, timeout=10)
+    loc = r.headers.get("Location", "")
+    check("acr_values mismatch returns unmet_authentication_requirements",
+          r.status_code in (302, 303)
+          and "error=unmet_authentication_requirements" in loc,
+          (r.status_code, loc))
+    r = requests.get(BASE + "/authorize",
+                     params={**acr_params, "state": "acr-ok",
+                             "acr_values": "urn:kagi:acr:passkey"},
+                     headers={"Cookie": "kagi_sid=" + sid},
+                     allow_redirects=False, timeout=10)
+    loc = r.headers.get("Location", "")
+    check("acr_values satisfied by a passkey session",
+          r.status_code in (302, 303) and "code=" in loc,
+          (r.status_code, loc))
 
     # DPoP proof replay: concurrent requests share a single signed proof/jti.
     # Only one can insert the unique replay-cache key.

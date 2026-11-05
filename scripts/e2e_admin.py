@@ -53,6 +53,23 @@ cid = reg["client_id"]
 check("private_key_jwt registration has no secret", "client_secret" not in reg, reg)
 check("registration returns the registered auth method", reg.get("token_endpoint_auth_method") == "private_key_jwt", reg)
 
+# Registration must not accept a look-alike HTTP host, private key material or
+# an unsafe post-logout URI.
+for label, bad_body in [
+    ("DCR rejects a locale-lookalike HTTP redirect",
+     {"client_name": "bad-host", "redirect_uris": ["http://localhost.evil.example/cb"]}),
+    ("DCR rejects private JWK material",
+     {"client_name": "bad-jwk", "redirect_uris": ["https://rp.example/cb"],
+      "token_endpoint_auth_method": "private_key_jwt",
+      "jwks": {"keys": [{**jwk, "d": b64u(secrets.token_bytes(32))}]}}),
+    ("DCR rejects an unsafe post-logout URI",
+     {"client_name": "bad-logout", "redirect_uris": ["https://rp.example/cb"],
+      "post_logout_redirect_uris": ["http://localhost.evil.example/out"]}),
+]:
+    r = requests.post(BASE + "/register", json=bad_body,
+                      headers={"Authorization": "Bearer " + REG})
+    check(label, r.status_code == 400, (r.status_code, r.text[:300]))
+
 # ---------------- private_key_jwt ----------------
 now = int(time.time())
 assertion = es256(key, {"alg": "ES256", "kid": kid, "typ": "jwt"}, {
