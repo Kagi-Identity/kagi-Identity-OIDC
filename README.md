@@ -2,6 +2,8 @@
 
 **Kagi Identity (Kagi ID)** is a passkey-first identity and authentication service built in Rust. It provides WebAuthn-based sign-in and OpenID Connect / OAuth endpoints for applications that need an identity provider.
 
+**English** | [日本語ドキュメント](docs/ja/README.md)
+
 > **Status and security note:** This repository is a reference implementation under active development. Passing its tests does not establish formal OAuth, OpenID Connect, FAPI, or WebAuthn certification. Do not use it as a production identity provider without profile-specific conformance testing, independent security review, and a deployment threat model.
 
 ## Get started in minutes
@@ -98,16 +100,19 @@ State-changing browser POSTs are validated with `Origin` and `Sec-Fetch-Site`. O
 
 ## Documentation
 
-**[日本語ドキュメントサイト](https://kagi-docs-gakusei-bot.vercel.app)** — overview, quickstart, OIDC integration, deployment, security, and testing.
+**[日本語ドキュメント](docs/ja/README.md)** — 日本語のクイックスタート、アカウント管理、OIDC 連携、デプロイ、設定、セキュリティ、テスト。ブラウザーで読める日本語ドキュメントサイトは [kagi-docs](https://kagi-docs-gakusei-bot.vercel.app) でも公開しています。
 
 | Guide | Use it for |
 | --- | --- |
 | [Quickstart](docs/QUICKSTART.md) | First run with Docker Compose or Rust, troubleshooting |
+| [Account console](docs/ACCOUNT.md) | Profile, passkeys, sessions, consent and recovery codes |
 | [Deployment](docs/DEPLOYMENT.md) | HTTPS, reverse proxies, secrets, storage, production checklist |
 | [Client integration](docs/CLIENT_INTEGRATION.md) | Registering an RP and connecting a web app |
 | [Configuration reference](docs/CONFIGURATION.md) | Environment variables and recommended baselines |
 | [Testing](docs/TESTING.md) | Rust checks, E2E tests, security regression tests |
 | [Security policy](SECURITY.md) | Vulnerability reporting and security expectations |
+
+The same guides are available in Japanese under [`docs/ja/`](docs/ja/README.md).
 
 ## Integration at a glance
 
@@ -273,4 +278,8 @@ For a deployment checklist, see [Deployment](docs/DEPLOYMENT.md). For security r
 
 ## License
 
-MIT
+Kagi Identity is open source software licensed under the **MIT License**. See [LICENSE](LICENSE) for the full text.
+
+You may use, modify, distribute, sublicense and sell this software, including for commercial purposes, provided the copyright notice and permission notice are included in all copies or substantial portions. The software is provided "as is", without warranty of any kind.
+
+Contributions are welcome. Read [SECURITY.md](SECURITY.md) before reporting a vulnerability and [docs/TESTING.md](docs/TESTING.md) before sending a change.

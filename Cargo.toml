@@ -5,6 +5,11 @@ edition = "2021"
 rust-version = "1.89"
 description = "Kagi Identity — a passkey-first OAuth 2.0 and OpenID Connect identity provider"
 license = "MIT"
+repository = "https://github.com/akiy2009/kagi"
+homepage = "https://github.com/akiy2009/kagi"
+readme = "README.md"
+keywords = ["oidc", "oauth2", "webauthn", "passkey", "identity"]
+categories = ["authentication"]
 
 [dependencies]
 axum = { version = "0.8", features = ["form", "json", "query"] }
