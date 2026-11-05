@@ -352,8 +352,10 @@ impl AuthData {
             }
             out.aaguid.copy_from_slice(&bytes[37..53]);
             let cred_len = u16::from_be_bytes([bytes[53], bytes[54]]) as usize;
-            let start = 55;
-            let end = start + cred_len;
+            let start = 55usize;
+            let end = start
+                .checked_add(cred_len)
+                .ok_or_else(|| anyhow!("credential id length overflow"))?;
             if bytes.len() < end {
                 bail!("credential id is truncated");
             }
@@ -361,7 +363,10 @@ impl AuthData {
             // The credential public key is a CBOR map; anything after it (for
             // example authenticator extensions) is intentionally ignored.
             let (_, consumed) = cbor::decode_one(&bytes[end..])?;
-            out.cose = bytes[end..end + consumed].to_vec();
+            let cose_end = end
+                .checked_add(consumed)
+                .ok_or_else(|| anyhow!("credential key length overflow"))?;
+            out.cose = bytes[end..cose_end].to_vec();
             // Validate that the COSE key is well formed now, not at login time.
             CoseKey::parse(&out.cose)?;
         } else if expect_attested {
@@ -650,11 +655,15 @@ mod cbor {
         }
 
         fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-            if self.pos + n > self.b.len() {
+            let end = self
+                .pos
+                .checked_add(n)
+                .ok_or_else(|| anyhow!("CBOR length overflow"))?;
+            if end > self.b.len() {
                 bail!("unexpected end of CBOR");
             }
-            let s = &self.b[self.pos..self.pos + n];
-            self.pos += n;
+            let s = &self.b[self.pos..end];
+            self.pos = end;
             Ok(s)
         }
 
