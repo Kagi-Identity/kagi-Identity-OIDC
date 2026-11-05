@@ -4,11 +4,14 @@ A responsive Japanese documentation site for Kagi Identity, implemented as a sel
 
 ## Sections
 - Overview and local quickstart
-- First passkey login
-- OIDC / OAuth authorization flow
+- First passkey login and the account console
+- Account management, sessions, consent and recovery codes
+- OIDC / OAuth authorization flow and advanced FAPI features (PAR/DPoP/JAR/JARM)
 - Client registration and browser SDK integration
-- Runtime architecture, deployment and persistence
-- Security checklist, testing, troubleshooting and known limitations
+- Environment configuration and production baseline
+- Runtime architecture, deployment, persistence and Supabase
+- Security checklist, implemented defences, testing, troubleshooting and known limitations
+- MIT license and open-source information
 - Client-side section search and active navigation
 
 ## Deploy as a separate Vercel project

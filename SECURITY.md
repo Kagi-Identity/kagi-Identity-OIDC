@@ -29,3 +29,7 @@ At minimum:
 ## Certification status
 
 This project does **not** claim formal OAuth, OpenID Connect, WebAuthn, or FAPI certification. A passing unit test, integration test, or CI workflow is not a certification and is not by itself evidence that a deployment is production-ready.
+
+## License
+
+Kagi Identity is open source software licensed under the [MIT License](LICENSE). Security reports and responsible disclosure are welcome under the terms above.
