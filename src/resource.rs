@@ -574,7 +574,15 @@ pub async fn rotate_keys(State(st): State<AppState>, headers: HeaderMap) -> Resp
     let mut ring = st.keys.write().unwrap_or_else(|e| e.into_inner());
     match ring.rotate(&st.db) {
         Ok(kid) => Json(json!({ "kid": kid, "keys": ring.key_ids() })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(error) => {
+            // Key-store errors can contain SQL or connection details.
+            eprintln!("[kagi] key rotation failed: {error:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "key_rotation_failed" })),
+            )
+                .into_response()
+        }
     }
 }
 

@@ -389,7 +389,10 @@ fn resolve_request_object(
         .ok_or_else(|| OauthError::invalid_request("client has no registered jwks"))?;
 
     let (_header, claims) = jose::verify_with_jwks(jwks, request, Some("oauth-authz-req+jwt"))
-        .map_err(|e| OauthError::invalid_request(format!("invalid request object: {e}")))?;
+        .map_err(|error| {
+            eprintln!("[kagi] request object signature validation failed: {error:#}");
+            OauthError::invalid_request("invalid request object")
+        })?;
 
     if claims.get("iss").and_then(Value::as_str) != Some(client.id.as_str()) {
         return Err(OauthError::invalid_request(
@@ -1212,7 +1215,10 @@ fn mint_access_token(
         .unwrap_or_else(|e| e.into_inner())
         .current()
         .sign(Some("at+jwt"), &claims)
-        .map_err(|e| OauthError::server_error(format!("signing failed: {e}")))?;
+        .map_err(|error| {
+            eprintln!("[kagi] access-token signing failed: {error:#}");
+            OauthError::server_error("internal server error")
+        })?;
 
     st.db.with(|c| {
         c.execute(
@@ -1325,7 +1331,10 @@ fn mint_id_token(
         .unwrap_or_else(|e| e.into_inner())
         .current()
         .sign(Some("JWT"), &claims)
-        .map_err(|e| OauthError::server_error(format!("signing failed: {e}")))
+        .map_err(|error| {
+            eprintln!("[kagi] ID-token signing failed: {error:#}");
+            OauthError::server_error("internal server error")
+        })
 }
 
 pub fn revoke_family(st: &AppState, family_id: &str) -> ApiResult<()> {
@@ -1437,8 +1446,10 @@ fn verify_client_assertion(st: &AppState, client: &Client, assertion: &str) -> A
         .jwks
         .as_ref()
         .ok_or_else(|| OauthError::invalid_client("client has no registered jwks"))?;
-    let (header, claims) = jose::verify_with_jwks(jwks, assertion, Some("JWT"))
-        .map_err(|e| OauthError::invalid_client(format!("bad client assertion: {e}")))?;
+    let (header, claims) = jose::verify_with_jwks(jwks, assertion, Some("JWT")).map_err(|error| {
+        eprintln!("[kagi] client assertion validation failed: {error:#}");
+        OauthError::invalid_client("invalid client assertion")
+    })?;
     if header.get("alg").and_then(Value::as_str) == Some("none") {
         return Err(OauthError::invalid_client("alg=none is not allowed"));
     }

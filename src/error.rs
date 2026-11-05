@@ -84,7 +84,11 @@ impl std::error::Error for OauthError {}
 
 impl From<anyhow::Error> for OauthError {
     fn from(value: anyhow::Error) -> Self {
-        OauthError::server_error(value.to_string())
+        // Storage, I/O and crypto errors can contain SQL, paths, identifiers or
+        // key material. Log the full chain for operators, but never reflect it
+        // to the caller.
+        eprintln!("[kagi] internal error: {value:#}");
+        OauthError::server_error("internal server error")
     }
 }
 
