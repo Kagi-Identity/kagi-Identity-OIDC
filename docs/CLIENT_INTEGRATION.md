@@ -18,7 +18,7 @@ curl --fail-with-body --request POST 'https://id.example.com/register' \
     "redirect_uris": ["https://app.example.com/auth/callback"],
     "grant_types": ["authorization_code", "refresh_token"],
     "scope": "openid profile email offline_access",
-    "auth_method": "none"
+    "token_endpoint_auth_method": "none"
   }'
 ```
 
