@@ -16,7 +16,15 @@ a{color:#111}
   const title=document.getElementById('title'), message=document.getElementById('message'), output=document.getElementById('output');
   const params=new URLSearchParams(location.search);
   if(params.has('error')){title.textContent='認証に失敗しました';message.textContent=params.get('error_description')||params.get('error');return;}
-  const issuer=sessionStorage.getItem('kagi-demo-issuer');
+  function normalizeIssuer(raw){
+    try{
+      const u=new URL((raw||'').trim());
+      const isLocalhost=u.hostname==='localhost'||u.hostname==='127.0.0.1'||u.hostname==='[::1]';
+      if(u.protocol!=='https:'&&!(u.protocol==='http:'&&isLocalhost)) return '';
+      return u.origin;
+    }catch(_){return '';}
+  }
+  const issuer=normalizeIssuer(sessionStorage.getItem('kagi-demo-issuer'));
   const clientId=sessionStorage.getItem('kagi-demo-client-id');
   const redirectUri=sessionStorage.getItem('kagi-demo-redirect-uri')||location.origin+'/callback.html';
   if(!issuer||!clientId){title.textContent='設定が見つかりません';message.textContent='ログインを開始したタブでサンプルに戻り、接続設定を確認してください。';return;}

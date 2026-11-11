@@ -80,7 +80,17 @@
     $('redirectUri').value = location.origin + '/callback.html';
     let discovery = null;
     let sdkLoaded = false;
-    function normalizeIssuer() { return $('issuer').value.trim().replace(/\/+$/, ''); }
+    function normalizeIssuer() {
+      const raw = $('issuer').value.trim();
+      try {
+        const u = new URL(raw);
+        const isLocalhost = u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]';
+        if (u.protocol !== 'https:' && !(u.protocol === 'http:' && isLocalhost)) return '';
+        return u.origin;
+      } catch (_) {
+        return '';
+      }
+    }
     function setResult(id, text, ok) {
       $(id).textContent = text;
       $(id).style.color = ok === true ? '#16834a' : ok === false ? '#c53232' : '#777';
@@ -142,6 +152,7 @@
       const issuer = normalizeIssuer();
       const clientId = $('clientId').value.trim();
       const redirectUri = $('redirectUri').value.trim();
+      if (!issuer) { $('detail').textContent = 'Issuer URL は https://（localhost のみ http:// 可）の有効なオリジンを指定してください。'; return; }
       if (!clientId || !redirectUri) { $('detail').textContent = 'Client ID と Redirect URI を入力してください。'; return; }
       try {
         sessionStorage.setItem('kagi-demo-issuer', issuer);
