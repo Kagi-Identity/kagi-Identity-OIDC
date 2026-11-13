@@ -18,18 +18,27 @@ def main() -> int:
         "KAGI_CORS_ORIGINS",
         "KAGI_REGISTRATION_TOKEN",
         "KAGI_TRUST_PROXY=1",
+        "KAGI_DPOP_NONCE=1",
         "rate_limits",
         "compare_exchange",
         "STRICT_TRANSPORT_SECURITY",
+        "/admin/audit/verify",
+        "current_nonce",
     ))
     require("src/db.rs", (
         "open_with_options",
         "SslMode::Require",
         "CREATE TABLE IF NOT EXISTS rate_limits",
+        "pg_advisory_xact_lock",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_seq",
     ))
     require("src/config.rs", ("KAGI_CORS_ORIGINS", "cors_origins", "KAGI_ENV", "validate_https_origin"))
     require("src/lib.rs", ("validate_production_config", "is_usable_production_secret"))
-    require("supabase/schema.sql", ("CREATE TABLE IF NOT EXISTS rate_limits",))
+    require("supabase/schema.sql", (
+        "CREATE TABLE IF NOT EXISTS rate_limits",
+        "CREATE TABLE IF NOT EXISTS audit_head",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_seq",
+    ))
     require("Dockerfile", ("USER 10001:10001", "HEALTHCHECK"))
     require("compose.production.yaml", (
         "read_only: true",

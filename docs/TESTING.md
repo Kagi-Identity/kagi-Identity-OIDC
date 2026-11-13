@@ -50,6 +50,16 @@ python scripts/e2e_webauthn.py
 python scripts/e2e_admin.py
 ```
 
+The security-operations suite needs a server started with nonces enabled and a shared secret:
+
+```bash
+KAGI_SEED_DEMO=1 KAGI_ADMIN_TOKEN=test-admin KAGI_DPOP_NONCE=1 \
+KAGI_DPOP_NONCE_SECRET=local-test-nonce-secret KAGI_DB=kagi-security-ops-e2e.db cargo run
+# in another terminal
+KAGI_DB=kagi-security-ops-e2e.db KAGI_ADMIN_TOKEN=test-admin \
+python scripts/e2e_security_ops.py
+```
+
 Run suites one at a time against a fresh database and a freshly started server. Rate limits are per process, and the back-channel logout test registers a loopback receiver, so a shared server can make later runs flaky. The new-feature suite expects `KAGI_REGISTRATION_TOKEN` to match the server and sets `KAGI_DEVICE_INTERVAL=1` to keep polling tests quick.
 
 The admin test expects the development-only values shown above. Never reuse them outside an isolated local test instance. The WebAuthn software-authenticator test has its own in-memory/test credential flow and expects the default local origin and RP ID.
@@ -67,6 +77,7 @@ On Windows, use PowerShell to set environment variables before invoking each com
 | `e2e_complete_oidc.py` | RFC 8628 device authorization/approval/denial/polling, `claims` validation and token filtering, RFC 7592 client management and secret rotation, signed back-channel logout delivery |
 | `e2e_security_races.py` | Concurrent authorization-code exchange, concurrent DPoP proof replay, key rotation/JWKS overlap, OIDC discovery sanity checks |
 | `e2e_rate_limit.py` | Shared fixed-window rate-limit enforcement and HTTP 429 behavior |
+| `e2e_security_ops.py` | Audit chain listing/verification/export, SQLite tamper detection, `/metrics`, DPoP nonce rejection and retry |
 
 The security-race script checks that exactly one concurrent authorization-code exchange succeeds and that a shared DPoP proof is accepted only once. It also checks a focused set of discovery metadata invariants. These are regression tests, not a complete normative test suite.
 
