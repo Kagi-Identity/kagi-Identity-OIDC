@@ -73,6 +73,8 @@ KAGI_SEED_DEMO=0
 KAGI_ALLOW_SIGNUP=0
 KAGI_REQUIRE_PAR=1
 KAGI_REQUIRE_DPOP=1
+KAGI_DPOP_NONCE=1
+KAGI_DPOP_NONCE_SECRET=retrieve-from-secret-manager
 KAGI_RATE_LIMIT=1
 KAGI_TRUST_PROXY=1
 KAGI_CORS_ORIGINS=https://your-rp.example.com
@@ -86,7 +88,7 @@ Replace every example with your real deployment values. `KAGI_ISSUER` and `KAGI_
 
 The same `Dockerfile` builds a portable OCI image. Build it in CI or on a trusted build host, publish it to your private container registry, and deploy it to a platform that can run containers. Configure the platform ingress to terminate HTTPS and forward to container port `8080`; do not expose the Kagi container directly to the public internet.
 
-Set the required production variables described in [Configuration](CONFIGURATION.md), including `KAGI_ENV=production`, `KAGI_BIND=0.0.0.0:8080`, a TLS-enabled PostgreSQL URL, exact issuer/origin/RP ID values, and separate strong administration/registration secrets. Apply `supabase/schema.sql` as a one-off migration before the first rollout. Configure the platform readiness probe as `GET /healthz`; this endpoint checks the database and signing-key tables, not merely process liveness.
+Set the required production variables described in [Configuration](CONFIGURATION.md), including `KAGI_ENV=production`, `KAGI_BIND=0.0.0.0:8080`, a TLS-enabled PostgreSQL URL, exact issuer/origin/RP ID values, separate strong administration/registration secrets, and a shared 32+ character `KAGI_DPOP_NONCE_SECRET`. Apply `supabase/schema.sql` as a one-off migration before the first rollout. Configure the platform readiness probe as `GET /healthz`; this endpoint checks the database and signing-key tables, not merely process liveness.
 
 Set `KAGI_TRUST_PROXY=1` only when the platform's trusted ingress overwrites `X-Forwarded-For`. If it does not, keep Kagi private and use a proxy configuration that sanitizes forwarded headers before enabling this option. Keep the application port private, persist the external database, and configure backup/restore, secret rotation, monitoring, and rolling-deploy behavior in the platform.
 

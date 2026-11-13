@@ -106,6 +106,14 @@ fn validate_production_config(cfg: &Config, is_vercel: bool) -> anyhow::Result<(
         "KAGI_RATE_LIMIT=1 is required in production"
     );
     anyhow::ensure!(
+        cfg.dpop_nonce,
+        "KAGI_DPOP_NONCE=1 is required in production"
+    );
+    anyhow::ensure!(
+        is_usable_production_secret(cfg.dpop_nonce_secret.as_ref()),
+        "KAGI_DPOP_NONCE_SECRET must be a unique, randomly generated secret of at least 32 characters"
+    );
+    anyhow::ensure!(
         is_usable_production_secret(cfg.admin_token.as_ref()),
         "KAGI_ADMIN_TOKEN must be a unique, randomly generated secret of at least 32 characters"
     );
@@ -583,6 +591,21 @@ async fn harden(State(st): State<AppState>, mut req: Request, next: Next) -> Res
     if !cacheable && !headers.contains_key(header::CACHE_CONTROL) {
         headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }
+
+    // RFC 9449 §8: always offer a fresh nonce on DPoP-capable endpoints (both
+    // success and error responses) so a client can retry without an extra round
+    // trip. Handlers may already have set a more specific value.
+    if let Some(nonce) = dpop::current_nonce(&st.cfg) {
+        if matches!(
+            path.as_str(),
+            "/token" | "/par" | "/userinfo" | "/introspect" | "/revoke" | "/device_authorization"
+        ) && !headers.contains_key("dpop-nonce")
+        {
+            if let Ok(value) = HeaderValue::from_str(&nonce) {
+                headers.insert(HeaderName::from_static("dpop-nonce"), value);
+            }
+        }
+    }
     res
 }
 
@@ -723,6 +746,8 @@ mod production_config_tests {
             hsts: true,
             trust_proxy: true,
             rate_limit: true,
+            dpop_nonce: true,
+            dpop_nonce_secret: Some("C".repeat(48)),
             recovery_enabled: true,
             max_passkeys: 10,
             audit_retention_days: 90,
