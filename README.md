@@ -70,7 +70,7 @@ For troubleshooting, configuration, and setup options, see the [Quickstart guide
 | Authentication | Passkey-first WebAuthn registration and sign-in; discoverable credentials, conditional UI, `none` / `packed` self-attestation, signature-counter clone detection, BE/BS flags |
 | Authorization | Authorization Code flow, PKCE S256, state/nonce handling, consent, `prompt=none/login/consent`, remembered consent, `max_age`, RFC 9207 `iss`, OIDC `claims` request parameter |
 | OAuth/OIDC | Discovery, JWKS, UserInfo, introspection, revocation, logout, dynamic client registration (RFC 7591), client management (RFC 7592), Device Authorization Grant (RFC 8628), Back-Channel Logout 1.0 |
-| Advanced profiles | PAR (RFC 9126), DPoP (RFC 9449, `cnf.jkt` + `ath` + `jti` replay protection), JAR (RFC 9101), JARM (`response_mode=jwt/query.jwt/fragment.jwt`) |
+| Advanced profiles | PAR (RFC 9126), DPoP (RFC 9449, `cnf.jkt` + `ath` + `jti` replay protection + server-issued nonces), JAR (RFC 9101), JARM (`response_mode=jwt/query.jwt/fragment.jwt`) |
 | Client authentication | `client_secret_basic`, `client_secret_post`, `private_key_jwt` (RS256/PS256/ES256/EdDSA) and public clients |
 | Tokens | ES256-signed JWT access tokens (`typ: at+jwt`), refresh-token rotation with reuse detection (family revocation), `at_hash`, `sid` |
 | Key lifecycle | Persistent signing keys, JWKS publication, administrative key rotation with a grace period |
@@ -78,7 +78,7 @@ For troubleshooting, configuration, and setup options, see the [Quickstart guide
 | Integration | Built-in demo RP and browser SDK at `/static/kagi.js`; CORS-controlled API |
 | Account console | Profile editing, passkey add/rename/delete, device (session) list with single/bulk sign-out, connected-app revocation, recovery codes, audit events, account deletion |
 | Interface | Monochrome responsive UI with automatic/light/dark themes (saved locally), keyboard-first focus states, skip link, reduced-motion support, formatted one-time-code fields and inline loading states |
-| Operations | Rate limiting, audit log, `/healthz` and `/readyz` (with database probe), `/admin/stats`, start-up configuration validation |
+| Operations | Rate limiting, tamper-evident audit chain with JSON/NDJSON export and verification, Prometheus `/metrics`, `/healthz` and `/readyz` (with database probe), `/admin/stats`, administrative key rotation, start-up configuration validation |
 | Security controls | PKCE enforcement, exact redirect URI matching, Origin + `Sec-Fetch-Site` checks, CSRF tokens, CSP/HSTS/COOP/CORP/Permissions-Policy, HttpOnly + SameSite=Lax sessions, SHA-256 at rest for all tokens, SSRF-resistant back-channel delivery |
 
 Feature presence does not imply full normative compliance with every RFC or certification profile. Confirm actual behavior against the exact commit and configuration you deploy.
@@ -155,6 +155,7 @@ The most important values are:
 - `KAGI_DATABASE_URL`: optional PostgreSQL/Supabase connection string; when set, it takes precedence over `KAGI_DB`.
 - `KAGI_SEED_DEMO`: enables the local demo RP; keep it disabled in production.
 - `KAGI_ADMIN_TOKEN` and `KAGI_REGISTRATION_TOKEN`: administrative and client-registration secrets; keep them in a secret manager.
+- `KAGI_DPOP_NONCE` and `KAGI_DPOP_NONCE_SECRET`: require server-issued DPoP nonces and share the HMAC secret across instances (production default: enabled).
 - `KAGI_RECOVERY_ENABLED`, `KAGI_MAX_PASSKEYS`, `KAGI_AUDIT_RETENTION_DAYS`: account-console policy.
 - `KAGI_DEVICE_TTL` and `KAGI_DEVICE_INTERVAL`: device-code lifetime and minimum polling interval in seconds.
 - `KAGI_CORS_ORIGINS`: exact HTTPS origins allowed to call the API; wildcards are rejected.
@@ -222,8 +223,9 @@ python scripts/e2e_complete_oidc.py
 | `e2e_complete_oidc.py` | Device authorization and polling states, `claims` validation and filtering, RFC 7592 client read/update/rotation/deletion, signed back-channel logout delivery |
 | `e2e_rate_limit.py` | Shared rate-limit counters across repeated requests |
 | `e2e_security_races.py` | Concurrent ceremony and refresh-token reuse races |
+| `e2e_security_ops.py` | Audit chain listing/verification/NDJSON export, SQLite tamper detection, `/metrics`, DPoP nonce rejection and retry |
 
-`e2e_oidc.py` and `e2e_advanced.py` insert sessions directly into the database, so run them with the same `KAGI_DB` as the server. `e2e_account.py` expects `KAGI_SEED_DEMO=1`, `KAGI_RECOVERY_ENABLED=1` and `KAGI_ADMIN_TOKEN=test-admin`. `e2e_complete_oidc.py` additionally needs `KAGI_REGISTRATION_TOKEN`; set `KAGI_DEVICE_INTERVAL=1` to keep the polling tests fast. The same scripts work against PostgreSQL/Supabase: only the server-side `KAGI_DATABASE_URL` changes.
+`e2e_oidc.py` and `e2e_advanced.py` insert sessions directly into the database, so run them with the same `KAGI_DB` as the server. `e2e_account.py` expects `KAGI_SEED_DEMO=1`, `KAGI_RECOVERY_ENABLED=1` and `KAGI_ADMIN_TOKEN=test-admin`. `e2e_complete_oidc.py` additionally needs `KAGI_REGISTRATION_TOKEN`; set `KAGI_DEVICE_INTERVAL=1` to keep the polling tests fast. `e2e_security_ops.py` expects `KAGI_DPOP_NONCE=1` with `KAGI_DPOP_NONCE_SECRET` and a writable SQLite `KAGI_DB` for the tamper assertion. The same scripts work against PostgreSQL/Supabase: only the server-side `KAGI_DATABASE_URL` changes.
 
 PAR returns `201 Created` as required by RFC 9126.
 
@@ -262,7 +264,22 @@ curl -s -X POST http://localhost:8080/token \
 
 For DPoP, add a `DPoP: <proof>` header to `/par` and `/token`; `token_type` becomes `DPoP` and `/userinfo` requires a proof with `ath`.
 
-## Architecture and operational boundaries
+## Auditing and operations
+
+Set `KAGI_ADMIN_TOKEN` to enable these endpoints (all require `Authorization: Bearer …`):
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /admin/stats` | Counts, database backend, uptime and current chain head |
+| `GET /admin/audit?after=&limit=` | Chained events, oldest first, with `next_after` cursor |
+| `GET /admin/audit/verify` | Re-walks the chain; `200` when intact, `409` with the failing position otherwise |
+| `GET /admin/audit/export?after=&limit=` | NDJSON archive with `X-Kagi-Next-After` for the next page |
+| `GET /metrics` | Prometheus gauges for users, credentials, sessions, tokens and the chain position |
+| `POST /admin/keys/rotate` | Rotate the signing key |
+
+A modified, deleted or reordered audit row changes a later `prev_hash`/`hash`, so verification fails and names the first bad `seq`. Events written before the chain existed have NULL `seq`/`hash` and are reported as `unhashed` rather than counted as a failure. When retention removes old events, the anchor advances so the retained suffix still verifies.
+
+
 
 - SQLite is convenient for local development. Vercel production requires PostgreSQL; shared records and rate-limit counters are stored there, while each warm function instance maintains a short-lived in-memory signing-key cache.
 - Signing keys are persisted in the database in this implementation; database backups therefore contain sensitive key material. Encrypt and restrict backups.
@@ -274,7 +291,8 @@ For DPoP, add a `DPoP: <proof>` header to `/par` and `/token`; `token_type` beco
 - **Client secrets are SHA-256, not Argon2.** The server generates them as 32 random bytes, so offline brute force does not apply; SHA-256 keeps authentication latency constant. There are no user passwords.
 - **Storage of secrets.** Authorization codes, refresh tokens and session ids are stored as SHA-256 hashes only. Access tokens are JWTs, but their `jti` is stored so logout and introspection work immediately.
 - **Recovery codes.** Ten random 50-bit codes are generated per set (no ambiguous characters). The stored digest is SHA-256 over `user id + code`, iterated 20,000 times, so a leaked database backup cannot cheaply brute-force the short human-typed codes. Consumption is a single atomic `UPDATE ... WHERE used_at IS NULL`.
-- **DPoP.** `typ=dpop+jwt`, non-secret `jwk`, and `htm`/`htu`/`iat`/`jti` are validated; `htu` is normalized against the issuer rather than proxy headers; `jti` is cached for replay protection; `dpop_jkt` is bound at code issuance and checked at exchange. Presenting a DPoP-bound token with `Bearer` (or the reverse) returns 401 per RFC 9449 §7.1.
+- **DPoP.** `typ=dpop+jwt`, non-secret `jwk`, and `htm`/`htu`/`iat`/`jti` are validated; `htu` is normalized against the issuer rather than proxy headers; `jti` is cached for replay protection; `dpop_jkt` is bound at code issuance and checked at exchange. With `KAGI_DPOP_NONCE=1` every proof must carry a server nonce (`use_dpop_nonce` + `DPoP-Nonce` on failure); nonces are HMAC-signed rotation windows, so any instance sharing the secret can verify them. Presenting a DPoP-bound token with `Bearer` (or the reverse) returns 401 per RFC 9449 §7.1.
+- **Audit trail.** Each security event is written in the same transaction as the chain head update and includes `seq`, `prev_hash` (32 zero bytes for the first event) and a SHA-256 `hash` over all fields. `/admin/audit/verify` re-walks the chain and reports the first gap, broken link or hash mismatch with `409`; retention pruning advances a signed anchor so the retained suffix still verifies. PostgreSQL deployments serialise appends with a transaction-scoped advisory lock.
 - **Consent.** Approved scopes are stored in `consents`. `prompt=none` resolves in the order: no session → `login_required`, no consent → `consent_required`, both present → issue a code. Newly requested scopes require re-consent.
 - **WebAuthn.** `residentKey: required`, `userVerification: required`; rpIdHash, UP/UV, origin and challenge are all verified; ES256 (DER), EdDSA and RS256 COSE keys are supported; a non-zero `signCount` that moves backwards is treated as a cloned authenticator.
 - **Known limits.** Single-node assumptions remain for in-process caches; `request_uri` only accepts `urn:ietf:params:oauth:request_uri:*` (no SSRF-prone HTTPS fetch); CIBA and SD-JWT VC are not implemented.
@@ -286,7 +304,10 @@ For a deployment checklist, see [Deployment](docs/DEPLOYMENT.md). For security r
 - [ ] Set `KAGI_ISSUER` to the public HTTPS URL.
 - [ ] Make `KAGI_RP_ID` match the issuer's registrable domain.
 - [ ] Enable `KAGI_REQUIRE_PAR=1` and `KAGI_REQUIRE_DPOP=1`.
+- [ ] Keep `KAGI_DPOP_NONCE=1` and set a dedicated `KAGI_DPOP_NONCE_SECRET`.
 - [ ] Set `KAGI_ADMIN_TOKEN` and `KAGI_REGISTRATION_TOKEN`.
+- [ ] Scrape `/metrics` with the admin token and alert on `/admin/audit/verify` failures.
+- [ ] Archive `/admin/audit/export` NDJSON to append-only storage.
 - [ ] Use `KAGI_DATABASE_URL` for PostgreSQL/Supabase and enable backups.
 - [ ] Encrypt backups that contain signing keys and tokens.
 - [ ] Move signing keys to a KMS/HSM and rotate `/admin/keys/rotate` on a schedule.
