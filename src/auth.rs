@@ -46,11 +46,22 @@ fn client_meta(headers: &HeaderMap) -> (Option<String>, Option<String>) {
     )
 }
 
-pub(crate) fn audit(st: &AppState, user_id: Option<&str>, kind: &str, detail: &str, headers: &HeaderMap) {
+pub(crate) fn audit(
+    st: &AppState,
+    user_id: Option<&str>,
+    kind: &str,
+    detail: &str,
+    headers: &HeaderMap,
+) {
     let (ip, ua) = client_meta(headers);
-    let _ = st
-        .db
-        .with(|c| db::record_audit(c, user_id, None, kind, detail, ip.as_deref(), ua.as_deref()));
+    // Chained writes are transactional; a storage failure must never break the
+    // user-facing operation, but it is surfaced in the server log.
+    if let Err(error) =
+        st.db
+            .append_audit(user_id, None, kind, detail, ip.as_deref(), ua.as_deref())
+    {
+        eprintln!("[kagi] audit write failed: {error}");
+    }
 }
 
 // ---------------------------------------------------------------------------
