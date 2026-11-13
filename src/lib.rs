@@ -39,6 +39,8 @@ pub struct AppState {
     /// Cheap per-instance rate limiter. The authoritative shared counters live
     /// in the database; this only sheds obvious floods before a DB round trip.
     pub limiter: Arc<ratelimit::RateLimiter>,
+    /// Unix timestamp of process start, used for uptime metrics.
+    pub started_at: i64,
 }
 
 fn is_usable_production_secret(secret: Option<&String>) -> bool {
@@ -153,6 +155,7 @@ pub fn build_state() -> anyhow::Result<AppState> {
         keys: Arc::new(RwLock::new(ring)),
         last_key_refresh: Arc::new(AtomicI64::new(util::now())),
         limiter: Arc::new(ratelimit::RateLimiter::new()),
+        started_at: util::now(),
     })
 }
 
@@ -232,6 +235,10 @@ fn routes_and_security(state: AppState) -> Router {
         )
         .route("/admin/keys/rotate", post(resource::rotate_keys))
         .route("/admin/stats", get(resource::admin_stats))
+        .route("/admin/audit", get(resource::admin_audit))
+        .route("/admin/audit/verify", get(resource::admin_audit_verify))
+        .route("/admin/audit/export", get(resource::admin_audit_export))
+        .route("/metrics", get(resource::metrics))
         .route("/healthz", get(resource::health))
         .route("/readyz", get(resource::health))
         .route("/demo", get(demo_page))
@@ -390,6 +397,8 @@ async fn harden(State(st): State<AppState>, mut req: Request, next: Next) -> Res
             "/register" => Some(("client-registration", 5)),
             p if p.starts_with("/register/") => Some(("client-management", 30)),
             "/admin/keys/rotate" => Some(("key-rotation", 3)),
+            "/metrics" => Some(("metrics", 120)),
+            p if p.starts_with("/admin/") => Some(("admin", 30)),
             "/login" | "/signup" | "/recover" => Some(("auth-page", 60)),
             _ => None,
         };
@@ -666,6 +675,7 @@ pub async fn run_local() -> anyhow::Result<()> {
         keys: Arc::new(RwLock::new(ring)),
         last_key_refresh: Arc::new(AtomicI64::new(util::now())),
         limiter: Arc::new(ratelimit::RateLimiter::new()),
+        started_at: util::now(),
     };
     let app = routes(state);
     let listener = TcpListener::bind(&cfg.bind).await?;

@@ -8,8 +8,8 @@ use crate::jose;
 use crate::oidc;
 use crate::util::*;
 use crate::AppState;
-use axum::extract::{Form, Path, State};
-use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::extract::{Form, Path, Query, State};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
@@ -101,7 +101,17 @@ fn userinfo_inner(st: &AppState, method: &Method, headers: &HeaderMap) -> ApiRes
                 "/userinfo",
                 Some(token.as_str()),
             )
-            .map_err(|e| e.with_status(StatusCode::UNAUTHORIZED).with_challenge(DPOP))?;
+            .map_err(|e| {
+                // RFC 9449 §9: a resource server signals a nonce retry with a
+                // 401 DPoP challenge; the fresh nonce is in `DPoP-Nonce`.
+                let challenge = if e.code == "use_dpop_nonce" {
+                    "DPoP error=\"use_dpop_nonce\""
+                } else {
+                    DPOP
+                };
+                e.with_status(StatusCode::UNAUTHORIZED)
+                    .with_challenge(challenge)
+            })?;
             if proof.jkt != jkt {
                 return Err(
                     OauthError::unauthorized("DPoP key does not match the token")
@@ -1089,12 +1099,24 @@ pub async fn admin_stats(State(st): State<AppState>, headers: HeaderMap) -> Resp
         Some(true) => {}
     }
 
-    match st.db.with(db::stats) {
-        Ok(stats) => {
+    match st
+        .db
+        .with(|c| {
+            let stats = db::stats(c)?;
+            let head = db::audit_head(c)?;
+            Ok((stats, head))
+        })
+    {
+        Ok((stats, head)) => {
             let mut res = Json(json!({
                 "issuer": st.cfg.issuer,
                 "database": st.db.backend(),
                 "generated_at": now(),
+                "started_at": st.started_at,
+                "uptime_seconds": now().saturating_sub(st.started_at).max(0),
+                "audit_chain": head
+                    .map(|(seq, hash)| json!({ "seq": seq, "hash": hash }))
+                    .unwrap_or(Value::Null),
                 "stats": stats,
             }))
             .into_response();
@@ -1109,6 +1131,257 @@ pub async fn admin_stats(State(st): State<AppState>, headers: HeaderMap) -> Resp
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": "stats_unavailable" })),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Admin audit trail
+// ---------------------------------------------------------------------------
+
+/// Gate every admin surface on the bearer token. Returns the response to send
+/// when the request is not authorised.
+fn admin_gate(st: &AppState, headers: &HeaderMap) -> Option<Response> {
+    match admin_authorised(st, headers) {
+        None => Some(StatusCode::NOT_FOUND.into_response()),
+        Some(false) => Some(StatusCode::UNAUTHORIZED.into_response()),
+        Some(true) => None,
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct AuditQuery {
+    #[serde(default)]
+    after: Option<i64>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+impl AuditQuery {
+    fn cursor(&self, max: i64) -> (i64, i64) {
+        (
+            self.after.unwrap_or(0).max(0),
+            self.limit.unwrap_or(100).clamp(1, max),
+        )
+    }
+}
+
+fn audit_error(error: anyhow::Error) -> Response {
+    eprintln!("[kagi] admin audit query failed: {error}");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({ "error": "audit_unavailable" })),
+    )
+        .into_response()
+}
+
+/// Paginated JSON view of the chained audit trail.
+pub async fn admin_audit(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<AuditQuery>,
+) -> Response {
+    if let Some(response) = admin_gate(&st, &headers) {
+        return response;
+    }
+    let (after, limit) = query.cursor(1000);
+    let result = st.db.with(|c| {
+        // One extra row tells us whether another page exists.
+        let events = db::audit_page(c, after, limit + 1)?;
+        let head = db::audit_head(c)?;
+        Ok((events, head))
+    });
+    match result {
+        Ok((mut events, head)) => {
+            let has_more = events.len() as i64 > limit;
+            events.truncate(limit as usize);
+            let next_after = if has_more {
+                events.last().and_then(|event| event.seq)
+            } else {
+                None
+            };
+            let mut res = Json(json!({
+                "issuer": st.cfg.issuer,
+                "generated_at": now(),
+                "after": after,
+                "count": events.len(),
+                "next_after": next_after,
+                "head": head
+                    .map(|(seq, hash)| json!({ "seq": seq, "hash": hash }))
+                    .unwrap_or(Value::Null),
+                "events": events,
+            }))
+            .into_response();
+            res.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            res
+        }
+        Err(error) => audit_error(error),
+    }
+}
+
+/// Re-walk the chain and report whether every link and hash matches.
+pub async fn admin_audit_verify(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some(response) = admin_gate(&st, &headers) {
+        return response;
+    }
+    match st.db.with(db::audit_verify) {
+        Ok(verification) => {
+            let status = if verification.ok {
+                StatusCode::OK
+            } else {
+                StatusCode::CONFLICT
+            };
+            let mut res = (status, Json(verification)).into_response();
+            res.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            res
+        }
+        Err(error) => audit_error(error),
+    }
+}
+
+/// Stream the chained trail as newline-delimited JSON for archival or SIEM
+/// ingestion. Pages are capped and the cursor is returned in
+/// `X-Kagi-Next-After`.
+pub async fn admin_audit_export(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<AuditQuery>,
+) -> Response {
+    if let Some(response) = admin_gate(&st, &headers) {
+        return response;
+    }
+    let (after, limit) = query.cursor(5000);
+    match st.db.with(|c| db::audit_page(c, after, limit + 1)) {
+        Ok(mut events) => {
+            let has_more = events.len() as i64 > limit;
+            events.truncate(limit as usize);
+            let next_after = if has_more {
+                events.last().and_then(|event| event.seq)
+            } else {
+                None
+            };
+            let mut body = String::new();
+            for event in &events {
+                // Serde failure here would mean a non-serialisable row; skip
+                // rather than emitting a partial line.
+                if let Ok(line) = serde_json::to_string(event) {
+                    body.push_str(&line);
+                    body.push('\n');
+                }
+            }
+            let mut res = (
+                [(
+                    header::CONTENT_TYPE,
+                    "application/x-ndjson; charset=utf-8",
+                )],
+                body,
+            )
+                .into_response();
+            let out = res.headers_mut();
+            out.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            out.insert(
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_static("attachment; filename=\"kagi-audit.ndjson\""),
+            );
+            out.insert(
+                HeaderName::from_static("x-kagi-next-after"),
+                HeaderValue::from_str(next_after.map(|n| n.to_string()).as_deref().unwrap_or(""))
+                    .unwrap_or_else(|_| HeaderValue::from_static("")),
+            );
+            res
+        }
+        Err(error) => audit_error(error),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Prometheus metrics
+// ---------------------------------------------------------------------------
+
+/// Prometheus text exposition. Requires the admin token: the gauges expose
+/// account and token counts, which are operationally useful but not public.
+pub async fn metrics(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some(response) = admin_gate(&st, &headers) {
+        return response;
+    }
+    let result = st
+        .db
+        .with(|c| Ok((db::stats(c)?, db::audit_head(c)?)));
+    match result {
+        Ok((stats, head)) => {
+            let mut body = String::new();
+            body.push_str(
+                "# HELP kagi_build_info Build information for this instance.\n\
+                 # TYPE kagi_build_info gauge\n",
+            );
+            body.push_str(&format!(
+                "kagi_build_info{{version=\"{}\",backend=\"{}\"}} 1\n",
+                env!("CARGO_PKG_VERSION"),
+                st.db.backend()
+            ));
+            body.push_str("# HELP kagi_uptime_seconds Seconds since this process started.\n# TYPE kagi_uptime_seconds gauge\n");
+            body.push_str(&format!(
+                "kagi_uptime_seconds {}\n",
+                now().saturating_sub(st.started_at).max(0)
+            ));
+            for (name, help, value) in [
+                ("kagi_users", "Registered accounts.", stats.users),
+                ("kagi_credentials", "Registered passkeys.", stats.credentials),
+                ("kagi_sessions", "Active browser sessions.", stats.sessions),
+                ("kagi_clients", "Registered OAuth clients.", stats.clients),
+                (
+                    "kagi_access_tokens",
+                    "Active access tokens.",
+                    stats.active_access_tokens,
+                ),
+                (
+                    "kagi_refresh_tokens",
+                    "Active refresh tokens.",
+                    stats.active_refresh_tokens,
+                ),
+                ("kagi_audit_events", "Retained audit events.", stats.audit_events),
+                (
+                    "kagi_recovery_codes",
+                    "Unused recovery codes.",
+                    stats.recovery_codes,
+                ),
+            ] {
+                body.push_str(&format!("# HELP {name} {help}\n# TYPE {name} gauge\n"));
+                body.push_str(&format!("{name} {value}\n"));
+            }
+            body.push_str(
+                "# HELP kagi_audit_chain_seq Last audit-chain position.\n\
+                 # TYPE kagi_audit_chain_seq gauge\n",
+            );
+            body.push_str(&format!(
+                "kagi_audit_chain_seq {}\n",
+                head.as_ref().map(|(seq, _)| *seq).unwrap_or(0)
+            ));
+            let mut res = (
+                [(
+                    header::CONTENT_TYPE,
+                    "text/plain; version=0.0.4; charset=utf-8",
+                )],
+                body,
+            )
+                .into_response();
+            res.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            res
+        }
+        Err(error) => {
+            eprintln!("[kagi] metrics query failed: {error}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(
+                    header::CONTENT_TYPE,
+                    "text/plain; version=0.0.4; charset=utf-8",
+                )],
+                "# kagi metrics unavailable\n",
             )
                 .into_response()
         }
