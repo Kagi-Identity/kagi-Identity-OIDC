@@ -1661,6 +1661,45 @@ pub fn revoke_client_tokens(c: &Connection, user_id: &str, client_id: &str) -> a
     Ok(())
 }
 
+/// Effect of an administrative revocation, reported back to the operator.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct RevocationSummary {
+    pub sessions: usize,
+    pub refresh_tokens: usize,
+    pub access_tokens: usize,
+    pub device_codes: usize,
+}
+
+/// Invalidate every credential a user currently holds.
+///
+/// This is the storage half of the administrative incident-response endpoint:
+/// browser sessions are deleted, their access and refresh tokens revoked, and
+/// pending device codes denied. Rows are only counted when their state
+/// actually changes, so the summary is honest about the effect and the
+/// operation is idempotent.
+pub fn revoke_user_access(c: &Connection, user_id: &str) -> anyhow::Result<RevocationSummary> {
+    let refresh_tokens = c.execute(
+        "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?1 AND revoked = 0",
+        params![user_id],
+    )?;
+    let access_tokens = c.execute(
+        "UPDATE access_tokens SET revoked = 1 WHERE user_id = ?1 AND revoked = 0",
+        params![user_id],
+    )?;
+    let sessions = c.execute("DELETE FROM sessions WHERE user_id = ?1", params![user_id])?;
+    let device_codes = c.execute(
+        "UPDATE device_codes SET status = 'denied'
+         WHERE user_id = ?1 AND status = 'pending'",
+        params![user_id],
+    )?;
+    Ok(RevocationSummary {
+        sessions,
+        refresh_tokens,
+        access_tokens,
+        device_codes,
+    })
+}
+
 pub fn update_user_profile(
     c: &Connection,
     user_id: &str,
@@ -2337,6 +2376,96 @@ mod schema_regression_tests {
         assert!(verification.ok, "{:?}", verification.error);
         assert_eq!(verification.unhashed, 1);
         assert_eq!(verification.checked, 2);
+    }
+
+    fn seed_shared_user(db: &super::Db) {
+        let now = crate::util::now();
+        db.with(|c| {
+            c.execute(
+                "INSERT INTO users (id, username, display_name, created_at)
+                 VALUES ('u1', 'u1', 'User One', ?1)",
+                super::params![now],
+            )?;
+            c.execute(
+                "INSERT INTO sessions (id, user_id, auth_time, amr, acr, expires_at, created_at)
+                 VALUES ('s1', 'u1', ?1, '[]', 'urn:kagi:acr:passkey', ?2, ?1)",
+                super::params![now, now + 3600],
+            )?;
+            c.execute(
+                "INSERT INTO refresh_tokens
+                     (token_hash, family_id, user_id, client_id, scope, auth_time, amr, acr,
+                      issued_at, expires_at)
+                 VALUES ('rt', 'family', 'u1', 'demo-web', 'openid', ?1, '[]', 'acr', ?1, ?2)",
+                super::params![now, now + 3600],
+            )?;
+            c.execute(
+                "INSERT INTO access_tokens
+                     (jti, user_id, client_id, scope, audience, subject, issued_at, expires_at)
+                 VALUES ('at', 'u1', 'demo-web', 'openid', 'issuer', 'u1', ?1, ?2)",
+                super::params![now, now + 300],
+            )?;
+            c.execute(
+                "INSERT INTO device_codes
+                     (device_hash, user_code_hash, client_id, scope, user_id, status,
+                      interval_secs, expires_at, created_at)
+                 VALUES ('dh', 'uch', 'demo-web', 'openid', 'u1', 'pending', 5, ?1, ?2)",
+                super::params![now + 600, now],
+            )?;
+            Ok(())
+        })
+        .expect("seed shared user");
+    }
+
+    #[test]
+    fn revoke_user_access_invalidates_every_credential_once() {
+        let db = audit_db();
+        seed_shared_user(&db);
+
+        let summary = db
+            .with(|c| super::revoke_user_access(c, "u1"))
+            .expect("revoke user");
+        assert_eq!(summary.sessions, 1);
+        assert_eq!(summary.refresh_tokens, 1);
+        assert_eq!(summary.access_tokens, 1);
+        assert_eq!(summary.device_codes, 1);
+
+        let (sessions, refresh_revoked, access_revoked, device_status): (i64, i64, i64, String) =
+            db.with(|c| {
+                Ok((
+                    c.query_row("SELECT COUNT(*) FROM sessions", super::params![], |r| {
+                        r.get(0)
+                    })?,
+                    c.query_row(
+                        "SELECT revoked FROM refresh_tokens WHERE token_hash = 'rt'",
+                        super::params![],
+                        |r| r.get(0),
+                    )?,
+                    c.query_row(
+                        "SELECT revoked FROM access_tokens WHERE jti = 'at'",
+                        super::params![],
+                        |r| r.get(0),
+                    )?,
+                    c.query_row(
+                        "SELECT status FROM device_codes WHERE device_hash = 'dh'",
+                        super::params![],
+                        |r| r.get(0),
+                    )?,
+                ))
+            })
+            .expect("inspect revocation");
+        assert_eq!(sessions, 0);
+        assert_eq!(refresh_revoked, 1);
+        assert_eq!(access_revoked, 1);
+        assert_eq!(device_status, "denied");
+
+        // A second call reports no further changes.
+        let again = db
+            .with(|c| super::revoke_user_access(c, "u1"))
+            .expect("revoke twice");
+        assert_eq!(again.sessions, 0);
+        assert_eq!(again.refresh_tokens, 0);
+        assert_eq!(again.access_tokens, 0);
+        assert_eq!(again.device_codes, 0);
     }
 
     #[test]

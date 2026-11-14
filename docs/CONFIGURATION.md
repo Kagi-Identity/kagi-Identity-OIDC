@@ -27,7 +27,7 @@ All values are read when the process starts. Restart Kagi Identity after changin
 | `KAGI_REQUIRE_DPOP` | `0` | Require DPoP for applicable flows |
 | `KAGI_DPOP_NONCE` | `1` in production | Require a server-issued DPoP nonce (`DPoP-Nonce`) in every proof (RFC 9449 §8) |
 | `KAGI_DPOP_NONCE_SECRET` | Unset (random per start outside production) | HMAC secret for stateless nonces; production requires ≥32 characters so all instances accept the same values |
-| `KAGI_ADMIN_TOKEN` | Unset | Bearer token protecting the administrative endpoints (`/admin/stats`, `/metrics`, `/admin/audit*`, `/admin/keys/rotate`); unset disables them |
+| `KAGI_ADMIN_TOKEN` | Unset | Bearer token protecting the administrative endpoints (`/admin/stats`, `/metrics`, `/admin/audit*`, `/admin/users/{id}/revoke`, `/admin/keys/rotate`); unset disables them |
 | `KAGI_REGISTRATION_TOKEN` | Unset | Initial access token required for dynamic client registration |
 | `KAGI_CORS_ORIGINS` | Unset | Comma-separated exact HTTPS origins allowed to call API endpoints |
 | `KAGI_COOKIE_SECURE` | Derived from HTTPS issuer | Add the Secure attribute to cookies |

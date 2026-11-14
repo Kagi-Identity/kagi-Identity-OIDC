@@ -275,9 +275,12 @@ Set `KAGI_ADMIN_TOKEN` to enable these endpoints (all require `Authorization: Be
 | `GET /admin/audit/verify` | Re-walks the chain; `200` when intact, `409` with the failing position otherwise |
 | `GET /admin/audit/export?after=&limit=` | NDJSON archive with `X-Kagi-Next-After` for the next page |
 | `GET /metrics` | Prometheus gauges for users, credentials, sessions, tokens and the chain position |
+| `POST /admin/users/{id}/revoke` | Incident response: delete the user's sessions, revoke their access/refresh tokens, deny pending device codes and notify relying parties |
 | `POST /admin/keys/rotate` | Rotate the signing key |
 
 A modified, deleted or reordered audit row changes a later `prev_hash`/`hash`, so verification fails and names the first bad `seq`. Events written before the chain existed have NULL `seq`/`hash` and are reported as `unhashed` rather than counted as a failure. When retention removes old events, the anchor advances so the retained suffix still verifies.
+
+`POST /admin/users/{id}/revoke` is the emergency stop for a suspected account compromise: it is idempotent, reports what changed, writes an `admin.user_revoke` event to the chain, and sends back-channel logout for each deleted session. UserInfo, introspection and the other kagi endpoints re-check `access_tokens.revoked`, so tokens die immediately here; a downstream API that only verifies the JWT signature against JWKS keeps accepting already-issued tokens until `KAGI_ACCESS_TTL` elapses.
 
 
 
