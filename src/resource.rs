@@ -1168,11 +1168,13 @@ impl AuditQuery {
     }
 }
 
-fn audit_error(error: anyhow::Error) -> Response {
-    eprintln!("[kagi] admin audit query failed: {error}");
+fn admin_db_error(error: anyhow::Error) -> Response {
+    // Keep storage details out of the response body; operators get them from
+    // the server log.
+    eprintln!("[kagi] admin database operation failed: {error}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({ "error": "audit_unavailable" })),
+        Json(json!({ "error": "unavailable" })),
     )
         .into_response()
 }
@@ -1218,7 +1220,7 @@ pub async fn admin_audit(
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             res
         }
-        Err(error) => audit_error(error),
+        Err(error) => admin_db_error(error),
     }
 }
 
@@ -1239,7 +1241,7 @@ pub async fn admin_audit_verify(State(st): State<AppState>, headers: HeaderMap) 
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             res
         }
-        Err(error) => audit_error(error),
+        Err(error) => admin_db_error(error),
     }
 }
 
@@ -1294,7 +1296,7 @@ pub async fn admin_audit_export(
             );
             res
         }
-        Err(error) => audit_error(error),
+        Err(error) => admin_db_error(error),
     }
 }
 
@@ -1385,6 +1387,73 @@ pub async fn metrics(State(st): State<AppState>, headers: HeaderMap) -> Response
             )
                 .into_response()
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Administrative incident response
+// ---------------------------------------------------------------------------
+
+/// Invalidate every session, token and pending device grant a user holds.
+///
+/// Idempotent: the response reports what actually changed. Sessions are
+/// deleted first inside one transaction, then relying parties that registered
+/// a back-channel logout URI are notified outside the database lock.
+pub async fn admin_user_revoke(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(user_id): Path<String>,
+) -> Response {
+    if let Some(response) = admin_gate(&st, &headers) {
+        return response;
+    }
+    let user = match st.db.with(|c| db::load_user(c, &user_id)) {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "not_found" }))).into_response()
+        }
+        Err(error) => return admin_db_error(error),
+    };
+    // Collect session ids before deletion so logout can still be propagated.
+    let session_ids = st
+        .db
+        .with(|c| db::list_sessions(c, &user.id))
+        .map(|sessions| {
+            sessions
+                .into_iter()
+                .map(|session| session.id)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    match st.db.tx(|tx| db::revoke_user_access(tx, &user.id)) {
+        Ok(summary) => {
+            for session_id in session_ids {
+                crate::backchannel::notify(&st, &user.id, Some(&session_id));
+            }
+            crate::auth::audit(
+                &st,
+                Some(&user.id),
+                "admin.user_revoke",
+                &format!(
+                    "管理 API による一括失効: sessions={} refresh_tokens={} access_tokens={} device_codes={}",
+                    summary.sessions,
+                    summary.refresh_tokens,
+                    summary.access_tokens,
+                    summary.device_codes
+                ),
+                &headers,
+            );
+            let mut res = Json(json!({
+                "ok": true,
+                "user_id": user.id,
+                "revoked": summary,
+            }))
+            .into_response();
+            res.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            res
+        }
+        Err(error) => admin_db_error(error),
     }
 }
 

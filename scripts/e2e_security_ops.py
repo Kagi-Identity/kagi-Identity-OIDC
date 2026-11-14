@@ -231,6 +231,105 @@ check(
 token_nonce = r.headers.get("DPoP-Nonce")
 check("token endpoint advertises DPoP-Nonce", bool(token_nonce), dict(r.headers))
 
+# ---------------- administrative revocation ----------------
+if DB and os.path.exists(DB):
+    revoked_user = "e2e-admin-revoke"
+    now = int(time.time())
+    connection = sqlite3.connect(DB, timeout=10)
+    try:
+        connection.execute(
+            "INSERT OR REPLACE INTO users (id, username, display_name, created_at) VALUES (?, ?, ?, ?)",
+            (revoked_user, revoked_user, "E2E Revoke", now),
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO sessions (id, user_id, auth_time, amr, acr, expires_at, created_at) "
+            "VALUES (?, ?, ?, '[]', 'urn:kagi:acr:passkey', ?, ?)",
+            ("e2e-session", revoked_user, now, now + 3600, now),
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO refresh_tokens "
+            "(token_hash, family_id, user_id, client_id, scope, auth_time, amr, acr, issued_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, '[]', 'urn:kagi:acr:passkey', ?, ?)",
+            ("e2e-refresh", "e2e-family", revoked_user, "demo-web", "openid", now, now, now + 3600),
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO access_tokens "
+            "(jti, user_id, client_id, scope, audience, subject, issued_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("e2e-access", revoked_user, "demo-web", "openid", BASE, revoked_user, now, now + 300),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    r = requests.post(BASE + f"/admin/users/{revoked_user}/revoke", timeout=10)
+    check(
+        "user revocation rejects an anonymous request",
+        r.status_code == 401,
+        (r.status_code, r.text[:200]),
+    )
+
+    r = requests.post(
+        BASE + "/admin/users/no-such-user/revoke", headers=admin, timeout=10
+    )
+    check(
+        "user revocation reports an unknown user",
+        r.status_code == 404,
+        (r.status_code, r.text[:200]),
+    )
+
+    r = requests.post(
+        BASE + f"/admin/users/{revoked_user}/revoke", headers=admin, timeout=10
+    )
+    payload = r.json() if r.status_code == 200 else {}
+    revoked = payload.get("revoked", {})
+    check("user revocation succeeds", r.status_code == 200, (r.status_code, payload))
+    check(
+        "revocation reports what it changed",
+        revoked.get("sessions") == 1
+        and revoked.get("refresh_tokens") == 1
+        and revoked.get("access_tokens") == 1,
+        revoked,
+    )
+
+    connection = sqlite3.connect(DB, timeout=10)
+    try:
+        sessions = connection.execute(
+            "SELECT COUNT(*) FROM sessions WHERE user_id = ?", (revoked_user,)
+        ).fetchone()[0]
+        refresh = connection.execute(
+            "SELECT revoked FROM refresh_tokens WHERE token_hash = 'e2e-refresh'"
+        ).fetchone()[0]
+        access = connection.execute(
+            "SELECT revoked FROM access_tokens WHERE jti = 'e2e-access'"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    check("revocation deleted the sessions", sessions == 0, sessions)
+    check("revocation invalidated refresh tokens", refresh == 1, refresh)
+    check("revocation invalidated access tokens", access == 1, access)
+
+    r = requests.post(
+        BASE + f"/admin/users/{revoked_user}/revoke", headers=admin, timeout=10
+    )
+    again = r.json().get("revoked", {}) if r.status_code == 200 else {}
+    check(
+        "revocation is idempotent",
+        r.status_code == 200
+        and all(value == 0 for value in again.values()),
+        (r.status_code, again),
+    )
+
+    r = requests.get(BASE + "/admin/audit?limit=1000", headers=admin, timeout=10)
+    events = r.json().get("events", []) if r.status_code == 200 else []
+    check(
+        "revocation is written to the audit chain",
+        any(event.get("kind") == "admin.user_revoke" for event in events),
+        [event.get("kind") for event in events[-5:]],
+    )
+else:
+    print("SKIP administrative revocation (KAGI_DB is not a local SQLite file)")
+
 # ---------------- tamper detection (SQLite only) ----------------
 if DB and os.path.exists(DB):
     r = requests.get(BASE + "/admin/audit?limit=100", headers=admin, timeout=10)
