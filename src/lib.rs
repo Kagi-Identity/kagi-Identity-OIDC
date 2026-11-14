@@ -251,6 +251,7 @@ fn routes_and_security(state: AppState) -> Router {
         .route("/admin/audit/verify", get(resource::admin_audit_verify))
         .route("/admin/audit/export", get(resource::admin_audit_export))
         .route("/admin/users/{user_id}/revoke", post(resource::admin_user_revoke))
+        .route("/admin/users/{user_id}", get(resource::admin_user))
         .route("/metrics", get(resource::metrics))
         .route("/healthz", get(resource::health))
         .route("/readyz", get(resource::health))

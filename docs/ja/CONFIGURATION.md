@@ -51,6 +51,7 @@
 | `KAGI_CODE_TTL` | `60` | 認可コードの有効期限。 |
 | `KAGI_ACCESS_TTL` | `300` | アクセストークンの有効期限（5 分）。 |
 | `KAGI_REFRESH_TTL` | `2592000` | リフレッシュトークンの有効期限（30 日）。 |
+| `KAGI_REFRESH_MAX_TTL` | `2592000` | 最初のサインインから数えたリフレッシュトークン系列の絶対有効期限（30 日）。ローテーションで延長できません。`KAGI_REFRESH_TTL` 以上である必要があります。 |
 | `KAGI_ID_TTL` | `300` | ID トークンの有効期限（5 分）。 |
 | `KAGI_PAR_TTL` | `90` | PAR の `request_uri` の有効期限。 |
 | `KAGI_DEVICE_TTL` | `600` | RFC 8628 デバイスコードの有効期限。 |

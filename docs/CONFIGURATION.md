@@ -49,6 +49,7 @@ All values are seconds and must be positive, except idle TTL may be `0` to disab
 | `KAGI_CODE_TTL` | `60` | Authorization-code lifetime |
 | `KAGI_ACCESS_TTL` | `300` | Access-token lifetime (5 minutes) |
 | `KAGI_REFRESH_TTL` | `2592000` | Refresh-token lifetime (30 days) |
+| `KAGI_REFRESH_MAX_TTL` | `2592000` | Absolute lifetime of a refresh-token family from the original sign-in (30 days); rotation cannot extend past it. Must be >= `KAGI_REFRESH_TTL` |
 | `KAGI_ID_TTL` | `300` | ID-token lifetime (5 minutes) |
 | `KAGI_PAR_TTL` | `90` | PAR request URI lifetime |
 | `KAGI_DEVICE_TTL` | `600` | RFC 8628 device-code lifetime |

@@ -275,6 +275,7 @@ Set `KAGI_ADMIN_TOKEN` to enable these endpoints (all require `Authorization: Be
 | `GET /admin/audit/verify` | Re-walks the chain; `200` when intact, `409` with the failing position otherwise |
 | `GET /admin/audit/export?after=&limit=` | NDJSON archive with `X-Kagi-Next-After` for the next page |
 | `GET /metrics` | Prometheus gauges for users, credentials, sessions, tokens and the chain position |
+| `GET /admin/users/{id}` | Read-only account view: live sessions, active tokens, passkeys and last activity, with no email or credential material |
 | `POST /admin/users/{id}/revoke` | Incident response: delete the user's sessions, revoke their access/refresh tokens, deny pending device codes and notify relying parties |
 | `POST /admin/keys/rotate` | Rotate the signing key |
 

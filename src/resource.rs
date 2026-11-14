@@ -1458,6 +1458,61 @@ pub async fn admin_user_revoke(
 }
 
 // ---------------------------------------------------------------------------
+// Administrative user view
+// ---------------------------------------------------------------------------
+
+/// Read-only account view used before an incident-response decision.
+///
+/// Deliberately minimal PII: the username and display name only. The email
+/// address and credential material are never returned, and no secrets or
+/// token hashes are exposed.
+pub async fn admin_user(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(user_id): Path<String>,
+) -> Response {
+    if let Some(response) = admin_gate(&st, &headers) {
+        return response;
+    }
+    let user = match st.db.with(|c| db::load_user(c, &user_id)) {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "not_found" }))).into_response()
+        }
+        Err(error) => return admin_db_error(error),
+    };
+    let overview = match st.db.with(|c| db::user_overview(c, &user.id)) {
+        Ok(overview) => overview,
+        Err(error) => return admin_db_error(error),
+    };
+    let mut res = Json(json!({
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "display_name": user.display_name,
+            "email_verified": user.email_verified,
+            "created_at": user.created_at,
+        },
+        "activity": {
+            "passkeys": overview.passkeys,
+            "sessions": overview.sessions,
+            "active_access_tokens": overview.active_access_tokens,
+            "active_refresh_tokens": overview.active_refresh_tokens,
+            "audit_events": overview.audit_events,
+            "last_seen_at": overview.last_seen_at,
+            "last_token_issued_at": overview.last_token_issued_at,
+            "last_credential_used_at": overview.last_credential_used_at,
+            "last_audit_at": overview.last_audit_at,
+            "last_activity_at": overview.last_activity_at(),
+        },
+    }))
+    .into_response();
+    res.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res
+}
+
+// ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
 
