@@ -106,6 +106,10 @@ fn validate_production_config(cfg: &Config, is_vercel: bool) -> anyhow::Result<(
         "KAGI_RATE_LIMIT=1 is required in production"
     );
     anyhow::ensure!(
+        cfg.refresh_max_ttl >= cfg.refresh_ttl,
+        "KAGI_REFRESH_MAX_TTL must be at least KAGI_REFRESH_TTL"
+    );
+    anyhow::ensure!(
         cfg.dpop_nonce,
         "KAGI_DPOP_NONCE=1 is required in production"
     );
@@ -757,6 +761,7 @@ mod production_config_tests {
             code_ttl: 60,
             access_ttl: 300,
             refresh_ttl: 2_592_000,
+            refresh_max_ttl: 7_776_000,
             id_ttl: 300,
             par_ttl: 90,
             device_ttl: 600,
@@ -782,6 +787,13 @@ mod production_config_tests {
     fn production_requires_distinct_administration_and_registration_secrets() {
         let mut config = valid_production_config();
         config.registration_token = config.admin_token.clone();
+        assert!(validate_production_config(&config, false).is_err());
+    }
+
+    #[test]
+    fn production_rejects_a_refresh_window_shorter_than_the_token_lifetime() {
+        let mut config = valid_production_config();
+        config.refresh_max_ttl = config.refresh_ttl - 1;
         assert!(validate_production_config(&config, false).is_err());
     }
 

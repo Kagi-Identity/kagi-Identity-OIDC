@@ -58,6 +58,10 @@ pub struct Config {
     pub access_ttl: i64,
     /// Refresh token lifetime in seconds.
     pub refresh_ttl: i64,
+    /// Absolute lifetime in seconds for a refresh-token family, measured from
+    /// the original authentication. Rotation cannot extend past this bound, so
+    /// a stolen refresh token cannot be kept alive indefinitely.
+    pub refresh_max_ttl: i64,
     /// ID token lifetime in seconds.
     pub id_ttl: i64,
     /// PAR request_uri lifetime in seconds (RFC 9126 recommends <= 600).
@@ -135,6 +139,13 @@ fn validate_https_origin(origin: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The absolute refresh-token lifetime bounds how long a family can be kept
+/// alive by rotation. It must be positive and no shorter than one token
+/// lifetime, otherwise a freshly minted token would already be past the bound.
+fn refresh_lifetimes_valid(refresh_ttl: i64, refresh_max_ttl: i64) -> bool {
+    refresh_ttl > 0 && refresh_max_ttl >= refresh_ttl
+}
+
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let issuer = non_empty("KAGI_ISSUER").unwrap_or_else(|| "http://localhost:8080".to_string());
@@ -191,6 +202,7 @@ impl Config {
         let code_ttl = num("KAGI_CODE_TTL", 60);
         let access_ttl = num("KAGI_ACCESS_TTL", 300);
         let refresh_ttl = num("KAGI_REFRESH_TTL", 30 * 24 * 3600);
+        let refresh_max_ttl = num("KAGI_REFRESH_MAX_TTL", 30 * 24 * 3600);
         let id_ttl = num("KAGI_ID_TTL", 300);
         let par_ttl = num("KAGI_PAR_TTL", 90);
         let device_ttl = num("KAGI_DEVICE_TTL", 600);
@@ -224,6 +236,7 @@ impl Config {
             ("KAGI_CODE_TTL", code_ttl),
             ("KAGI_ACCESS_TTL", access_ttl),
             ("KAGI_REFRESH_TTL", refresh_ttl),
+            ("KAGI_REFRESH_MAX_TTL", refresh_max_ttl),
             ("KAGI_ID_TTL", id_ttl),
             ("KAGI_PAR_TTL", par_ttl),
             ("KAGI_DEVICE_TTL", device_ttl),
@@ -234,6 +247,10 @@ impl Config {
         anyhow::ensure!(
             session_idle_ttl >= 0 && (session_idle_ttl == 0 || session_idle_ttl <= session_ttl),
             "KAGI_SESSION_IDLE_TTL must be 0 or between 1 and KAGI_SESSION_TTL"
+        );
+        anyhow::ensure!(
+            refresh_lifetimes_valid(refresh_ttl, refresh_max_ttl),
+            "KAGI_REFRESH_MAX_TTL must be greater than or equal to KAGI_REFRESH_TTL"
         );
 
         Ok(Self {
@@ -273,6 +290,7 @@ impl Config {
             code_ttl,
             access_ttl,
             refresh_ttl,
+            refresh_max_ttl,
             id_ttl,
             par_ttl,
             device_ttl,
@@ -423,6 +441,7 @@ mod origin_tests {
                 code_ttl: 60,
                 access_ttl: 300,
                 refresh_ttl: 3600,
+                refresh_max_ttl: 86_400,
                 id_ttl: 300,
                 par_ttl: 90,
                 device_ttl: 600,
@@ -430,6 +449,15 @@ mod origin_tests {
             };
             assert!(config.is_local(), "did not detect local issuer host: {host}");
         }
+    }
+
+    #[test]
+    fn refresh_lifetimes_reject_an_unbounded_or_inverted_window() {
+        assert!(super::refresh_lifetimes_valid(3600, 3600));
+        assert!(super::refresh_lifetimes_valid(3600, 86_400));
+        assert!(!super::refresh_lifetimes_valid(0, 3600));
+        assert!(!super::refresh_lifetimes_valid(3600, 3599));
+        assert!(!super::refresh_lifetimes_valid(3600, 0));
     }
 
     #[test]

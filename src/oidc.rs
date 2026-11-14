@@ -1327,6 +1327,14 @@ fn refresh(
     if row.expires_at < now() {
         return Err(OauthError::invalid_grant("refresh token expired"));
     }
+    // Rotation must not extend a token family forever: the absolute deadline is
+    // measured from the original authentication, not from the latest issue.
+    if now() > row.auth_time.saturating_add(st.cfg.refresh_max_ttl) {
+        revoke_family(st, &row.family_id)?;
+        return Err(OauthError::invalid_grant(
+            "refresh token exceeded its absolute lifetime; sign in again",
+        ));
+    }
 
     // A refresh token issued from a browser session must not outlive that
     // session's absolute or idle lifetime. This check is server-side; it does
@@ -1412,7 +1420,8 @@ fn refresh(
                 row.session_id,
                 row.claims,
                 now(),
-                now() + st.cfg.refresh_ttl,
+                (now() + st.cfg.refresh_ttl)
+                    .min(row.auth_time.saturating_add(st.cfg.refresh_max_ttl)),
             ],
         )?;
         Ok(true)
@@ -1654,7 +1663,8 @@ pub(crate) fn mint_refresh_token(
                 session_id,
                 grant_claims,
                 now(),
-                now() + st.cfg.refresh_ttl,
+                (now() + st.cfg.refresh_ttl)
+                    .min(auth_time.saturating_add(st.cfg.refresh_max_ttl)),
             ],
         )?;
         Ok(())
