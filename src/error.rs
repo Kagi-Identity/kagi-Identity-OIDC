@@ -1,4 +1,4 @@
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
@@ -10,6 +10,8 @@ pub struct OauthError {
     pub description: String,
     /// Optional `WWW-Authenticate` challenge for 401 responses.
     pub challenge: Option<HeaderValue>,
+    /// Fresh nonce sent in the `DPoP-Nonce` response header (RFC 9449 §8).
+    pub dpop_nonce: Option<String>,
 }
 
 pub type ApiResult<T> = Result<T, OauthError>;
@@ -21,6 +23,7 @@ impl OauthError {
             code,
             description: description.into(),
             challenge: None,
+            dpop_nonce: None,
         }
     }
 
@@ -35,6 +38,14 @@ impl OauthError {
     pub fn with_challenge(mut self, challenge: &'static str) -> Self {
         self.challenge = HeaderValue::from_str(challenge).ok();
         self
+    }
+
+    /// Set the `use_dpop_nonce` challenge (RFC 9449 §8): the client must retry
+    /// with a proof that carries the supplied nonce. Echoed in `DPoP-Nonce`.
+    pub fn use_dpop_nonce(description: impl Into<String>, nonce: String) -> Self {
+        let mut error = Self::new(StatusCode::BAD_REQUEST, "use_dpop_nonce", description);
+        error.dpop_nonce = Some(nonce);
+        error
     }
 
     pub fn invalid_request(description: impl Into<String>) -> Self {
@@ -105,6 +116,11 @@ impl IntoResponse for OauthError {
         let h = res.headers_mut();
         h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
         h.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+        if let Some(nonce) = self.dpop_nonce.as_deref() {
+            if let Ok(value) = HeaderValue::from_str(nonce) {
+                h.insert(HeaderName::from_static("dpop-nonce"), value);
+            }
+        }
         if self.status == StatusCode::UNAUTHORIZED {
             let challenge = self.challenge.clone().unwrap_or_else(|| {
                 HeaderValue::from_static("Basic realm=\"kagi\", charset=\"UTF-8\"")

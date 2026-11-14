@@ -8,7 +8,7 @@
 
 | 変数 | 既定値 | 意味 |
 | --- | --- | --- |
-| `KAGI_ENV` | `development`（Vercel では `production`） | `development` / `test` / `production`。`production` では HTTPS、PostgreSQL、Secure Cookie / HSTS、PAR、信頼済みプロキシ、レート制限、デモ無効、自動マイグレーション無効、十分な強度の管理・登録トークンが必須になります。1 つでも欠けると起動に失敗します。 |
+| `KAGI_ENV` | `development`（Vercel では `production`） | `development` / `test` / `production`。`production` では HTTPS、PostgreSQL、Secure Cookie / HSTS、PAR、DPoP nonce、信頼済みプロキシ、レート制限、デモ無効、自動マイグレーション無効、十分な強度の管理・登録・DPoP nonce 秘密鍵が必須になります。1 つでも欠けると起動に失敗します。 |
 | `KAGI_ISSUER` | `http://localhost:8080` | 公開 Issuer オリジン。パス、クエリ、フラグメント、末尾スラッシュは禁止です。 |
 | `KAGI_BIND` | `127.0.0.1:8080` | バインドするアドレスとポート。コンテナでは `0.0.0.0:8080` を使います。 |
 | `KAGI_RP_ID` | Issuer から導出したホスト | WebAuthn の RP ID。スキームやポートを含まないベアホスト名 / ドメインです。 |
@@ -27,7 +27,9 @@
 | `KAGI_SEED_DEMO` | `0` | 開発用 `demo-web` クライアントを登録します。本番では無効にしてください。 |
 | `KAGI_REQUIRE_PAR` | `0` | Pushed Authorization Request を必須にします。 |
 | `KAGI_REQUIRE_DPOP` | `0` | 対象フローで DPoP を必須にします。 |
-| `KAGI_ADMIN_TOKEN` | 未設定 | `/admin/keys/rotate` と `/admin/stats` を保護する Bearer トークン。未設定時は無効化されます。 |
+| `KAGI_DPOP_NONCE` | 本番では `1` | サーバー発行の DPoP nonce（`DPoP-Nonce`）をすべての証明に要求します（RFC 9449 §8）。 |
+| `KAGI_DPOP_NONCE_SECRET` | 未設定（本番以外は起動ごとにランダム） | nonce をステートレスに署名する HMAC 秘密鍵。本番では 32 文字以上が必須で、全インスタンスで共有します。 |
+| `KAGI_ADMIN_TOKEN` | 未設定 | `/admin/stats`、`/metrics`、`/admin/audit*`、`/admin/keys/rotate` を保護する Bearer トークン。未設定時は無効化されます。 |
 | `KAGI_REGISTRATION_TOKEN` | 未設定 | 動的クライアント登録に必要な initial access token。未設定時は登録を拒否します。 |
 | `KAGI_CORS_ORIGINS` | 未設定 | API 呼び出しを許可する HTTPS オリジンのカンマ区切りリスト。ワイルドカードは拒否されます。 |
 | `KAGI_COOKIE_SECURE` | HTTPS Issuer から導出 | Cookie に `Secure` を付与します。HTTPS では `__Host-kagi_sid`、HTTP では `kagi_sid` を使います。 |
@@ -71,11 +73,13 @@ KAGI_SEED_DEMO=0
 KAGI_ALLOW_SIGNUP=0
 KAGI_REQUIRE_PAR=1
 KAGI_REQUIRE_DPOP=1
+KAGI_DPOP_NONCE=1
 KAGI_RATE_LIMIT=1
 KAGI_TRUST_PROXY=1
 KAGI_AUTO_MIGRATE=0
 KAGI_CORS_ORIGINS=https://your-rp.example.com
 KAGI_ADMIN_TOKEN=秘密管理領域から取得
+KAGI_DPOP_NONCE_SECRET=秘密管理領域から取得
 KAGI_REGISTRATION_TOKEN=秘密管理領域から取得
 ```
 
@@ -90,6 +94,7 @@ KAGI_REGISTRATION_TOKEN=秘密管理領域から取得
 - PAR が必須
 - 信頼済みプロキシが有効
 - レート制限が有効
+- DPoP nonce が有効で、十分な長さの `KAGI_DPOP_NONCE_SECRET` が設定されている
 - 正確な HTTPS の CORS 許可リストが設定されている
 - 管理トークンと登録トークンが十分な長さの異なるランダム値
 

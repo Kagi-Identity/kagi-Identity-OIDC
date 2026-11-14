@@ -159,7 +159,9 @@ CREATE TABLE IF NOT EXISTS access_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_at_user ON access_tokens(user_id);
 
--- Security events shown in the account console.
+-- Tamper-evident security event log. `seq` orders an append-only hash chain:
+-- `hash` covers the event plus `prev_hash`. Rows from earlier releases have
+-- NULL seq/hash and are reported as unhashed by verification.
 CREATE TABLE IF NOT EXISTS audit_events (
     id          TEXT PRIMARY KEY,
     user_id     TEXT,
@@ -168,10 +170,21 @@ CREATE TABLE IF NOT EXISTS audit_events (
     detail      TEXT NOT NULL,
     ip          TEXT,
     user_agent  TEXT,
-    created_at  BIGINT NOT NULL
+    created_at  BIGINT NOT NULL,
+    seq         BIGINT,
+    prev_hash   TEXT,
+    hash        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_events(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at);
+
+-- Chain head ('head') and pruning anchor ('anchor').
+CREATE TABLE IF NOT EXISTS audit_head (
+    id          TEXT PRIMARY KEY,
+    seq         BIGINT NOT NULL,
+    hash        TEXT NOT NULL,
+    updated_at  BIGINT NOT NULL
+);
 
 -- Single-use recovery codes. Only the SHA-256 of the normalised code is stored.
 CREATE TABLE IF NOT EXISTS recovery_codes (
@@ -211,9 +224,13 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS backchannel_logout_uri TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS backchannel_logout_session_required BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE auth_codes ADD COLUMN IF NOT EXISTS claims TEXT;
 ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS claims TEXT;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS seq BIGINT;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS prev_hash TEXT;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS hash TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_at_session ON access_tokens(session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_seq ON audit_events(seq);
 
 UPDATE sessions SET last_seen_at = created_at WHERE last_seen_at = 0;
 

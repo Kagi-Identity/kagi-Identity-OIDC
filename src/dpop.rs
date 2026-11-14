@@ -1,11 +1,54 @@
 use crate::config::Config;
+use crate::db::params;
 use crate::db::Db;
 use crate::error::OauthError;
 use crate::jose::{self, thumbprint};
 use crate::util::{b64, normalize_htu, now, sha256};
 use axum::http::HeaderMap;
-use crate::db::params;
+use ring::hmac;
 use serde_json::Value;
+
+/// Nonce rotation window. A nonce is accepted for the window it was issued in
+/// and the following one, so a client has at most ~10 minutes to retry while
+/// an intercepted proof cannot be replayed with an old nonce indefinitely.
+const NONCE_WINDOW_SECS: i64 = 300;
+
+/// Deterministic HMAC tag binding a nonce to one rotation window.
+fn nonce_tag(secret: &[u8], window: i64) -> String {
+    let key = hmac::Key::new(hmac::HMAC_SHA256, secret);
+    let tag = hmac::sign(&key, format!("kagi-dpop-nonce:v1:{window}").as_bytes());
+    b64(tag.as_ref())
+}
+
+/// Mint the nonce for the window that contains `at`.
+pub fn issue_nonce_at(secret: &[u8], at: i64) -> String {
+    let window = at.div_euclid(NONCE_WINDOW_SECS);
+    format!("{window}.{}", nonce_tag(secret, window))
+}
+
+/// Accept the current window and the previous one; reject anything else.
+pub fn nonce_valid_at(secret: &[u8], nonce: &str, at: i64) -> bool {
+    let Some((raw_window, tag)) = nonce.split_once('.') else {
+        return false;
+    };
+    let Ok(window) = raw_window.parse::<i64>() else {
+        return false;
+    };
+    let current = at.div_euclid(NONCE_WINDOW_SECS);
+    if window != current && window != current - 1 {
+        return false;
+    }
+    crate::util::ct_eq(tag, &nonce_tag(secret, window))
+}
+
+/// Current nonce, or `None` when nonce enforcement is disabled.
+pub fn current_nonce(cfg: &Config) -> Option<String> {
+    if !cfg.dpop_nonce {
+        return None;
+    }
+    let secret = cfg.dpop_nonce_secret.as_deref()?;
+    Some(issue_nonce_at(secret.as_bytes(), now()))
+}
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -38,8 +81,8 @@ pub fn inspect(
         .to_str()
         .map_err(|_| dpop_error("DPoP header is not ASCII"))?;
 
-    let (header, claims, _, _) =
-        jose::decode_segments(proof).map_err(|e| dpop_error(format!("malformed DPoP proof: {e}")))?;
+    let (header, claims, _, _) = jose::decode_segments(proof)
+        .map_err(|e| dpop_error(format!("malformed DPoP proof: {e}")))?;
 
     if header.get("typ").and_then(Value::as_str) != Some("dpop+jwt") {
         return Err(dpop_error("DPoP typ must be dpop+jwt"));
@@ -87,6 +130,31 @@ pub fn inspect(
         .ok_or_else(|| dpop_error("DPoP proof has no iat"))?;
     if (now() - iat).abs() > 300 {
         return Err(dpop_error("DPoP proof is too old or from the future"));
+    }
+
+    // RFC 9449 §8: a server-chosen nonce prevents an attacker from preparing a
+    // proof in advance (and gives the server a cheap replay/clock bound). The
+    // `use_dpop_nonce` error carries the fresh value in `DPoP-Nonce`.
+    if cfg.dpop_nonce {
+        let secret = cfg
+            .dpop_nonce_secret
+            .as_deref()
+            .ok_or_else(|| OauthError::server_error("DPoP nonce secret is not configured"))?;
+        match claims.get("nonce").and_then(Value::as_str) {
+            Some(nonce) if nonce_valid_at(secret.as_bytes(), nonce, now()) => {}
+            Some(_) => {
+                return Err(OauthError::use_dpop_nonce(
+                    "DPoP nonce is stale or invalid",
+                    issue_nonce_at(secret.as_bytes(), now()),
+                ))
+            }
+            None => {
+                return Err(OauthError::use_dpop_nonce(
+                    "DPoP nonce is required",
+                    issue_nonce_at(secret.as_bytes(), now()),
+                ))
+            }
+        }
     }
 
     if let Some(at) = access_token {
@@ -137,4 +205,56 @@ pub fn require(
 ) -> Result<DpopProof, OauthError> {
     inspect(cfg, db, headers, method, path, access_token)?
         .ok_or_else(|| dpop_error("DPoP proof required"))
+}
+
+#[cfg(test)]
+mod nonce_tests {
+    use super::{issue_nonce_at, nonce_valid_at};
+
+    const SECRET: &[u8] = b"test-nonce-secret";
+
+    #[test]
+    fn accepts_the_current_and_previous_window() {
+        let at = 1_000_000;
+        let nonce = issue_nonce_at(SECRET, at);
+        assert!(nonce_valid_at(SECRET, &nonce, at));
+        // A nonce minted in the previous rotation window is still accepted,
+        // which gives a client one window to retry after a clock skew.
+        let previous = issue_nonce_at(SECRET, at - 300);
+        assert!(nonce_valid_at(SECRET, &previous, at));
+    }
+
+    #[test]
+    fn rejects_expired_future_and_forged_nonces() {
+        let at = 1_000_000;
+        let nonce = issue_nonce_at(SECRET, at);
+        assert!(!nonce_valid_at(SECRET, &nonce, at - 600));
+        assert!(!nonce_valid_at(SECRET, &nonce, at + 600));
+        assert!(!nonce_valid_at(SECRET, &nonce, at + 5 * 300));
+        assert!(!nonce_valid_at(b"another-secret", &nonce, at));
+        // Malformed inputs are derived from the valid nonce rather than written
+        // as literals: a value shaped like a nonce must never appear verbatim
+        // in the source, even in a test.
+        let (window, _) = nonce.split_once('.').expect("nonce has a window prefix");
+        assert!(!nonce_valid_at(SECRET, window, at));
+        let mut non_numeric = nonce.clone();
+        non_numeric.insert(0, 'x');
+        assert!(!nonce_valid_at(SECRET, &non_numeric, at));
+        let mut tampered = nonce.clone();
+        let last = tampered.pop().unwrap();
+        tampered.push(if last == 'A' { 'B' } else { 'A' });
+        assert!(!nonce_valid_at(SECRET, &tampered, at));
+    }
+
+    #[test]
+    fn issuance_is_deterministic_within_a_window() {
+        assert_eq!(
+            issue_nonce_at(SECRET, 1_000_000),
+            issue_nonce_at(SECRET, 1_000_100)
+        );
+        assert_ne!(
+            issue_nonce_at(SECRET, 1_000_000),
+            issue_nonce_at(SECRET, 1_000_300)
+        );
+    }
 }

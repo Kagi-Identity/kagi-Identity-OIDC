@@ -39,6 +39,8 @@ pub struct AppState {
     /// Cheap per-instance rate limiter. The authoritative shared counters live
     /// in the database; this only sheds obvious floods before a DB round trip.
     pub limiter: Arc<ratelimit::RateLimiter>,
+    /// Unix timestamp of process start, used for uptime metrics.
+    pub started_at: i64,
 }
 
 fn is_usable_production_secret(secret: Option<&String>) -> bool {
@@ -104,6 +106,14 @@ fn validate_production_config(cfg: &Config, is_vercel: bool) -> anyhow::Result<(
         "KAGI_RATE_LIMIT=1 is required in production"
     );
     anyhow::ensure!(
+        cfg.dpop_nonce,
+        "KAGI_DPOP_NONCE=1 is required in production"
+    );
+    anyhow::ensure!(
+        is_usable_production_secret(cfg.dpop_nonce_secret.as_ref()),
+        "KAGI_DPOP_NONCE_SECRET must be a unique, randomly generated secret of at least 32 characters"
+    );
+    anyhow::ensure!(
         is_usable_production_secret(cfg.admin_token.as_ref()),
         "KAGI_ADMIN_TOKEN must be a unique, randomly generated secret of at least 32 characters"
     );
@@ -153,6 +163,7 @@ pub fn build_state() -> anyhow::Result<AppState> {
         keys: Arc::new(RwLock::new(ring)),
         last_key_refresh: Arc::new(AtomicI64::new(util::now())),
         limiter: Arc::new(ratelimit::RateLimiter::new()),
+        started_at: util::now(),
     })
 }
 
@@ -232,6 +243,10 @@ fn routes_and_security(state: AppState) -> Router {
         )
         .route("/admin/keys/rotate", post(resource::rotate_keys))
         .route("/admin/stats", get(resource::admin_stats))
+        .route("/admin/audit", get(resource::admin_audit))
+        .route("/admin/audit/verify", get(resource::admin_audit_verify))
+        .route("/admin/audit/export", get(resource::admin_audit_export))
+        .route("/metrics", get(resource::metrics))
         .route("/healthz", get(resource::health))
         .route("/readyz", get(resource::health))
         .route("/demo", get(demo_page))
@@ -390,6 +405,8 @@ async fn harden(State(st): State<AppState>, mut req: Request, next: Next) -> Res
             "/register" => Some(("client-registration", 5)),
             p if p.starts_with("/register/") => Some(("client-management", 30)),
             "/admin/keys/rotate" => Some(("key-rotation", 3)),
+            "/metrics" => Some(("metrics", 120)),
+            p if p.starts_with("/admin/") => Some(("admin", 30)),
             "/login" | "/signup" | "/recover" => Some(("auth-page", 60)),
             _ => None,
         };
@@ -574,6 +591,21 @@ async fn harden(State(st): State<AppState>, mut req: Request, next: Next) -> Res
     if !cacheable && !headers.contains_key(header::CACHE_CONTROL) {
         headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }
+
+    // RFC 9449 §8: always offer a fresh nonce on DPoP-capable endpoints (both
+    // success and error responses) so a client can retry without an extra round
+    // trip. Handlers may already have set a more specific value.
+    if let Some(nonce) = dpop::current_nonce(&st.cfg) {
+        if matches!(
+            path.as_str(),
+            "/token" | "/par" | "/userinfo" | "/introspect" | "/revoke" | "/device_authorization"
+        ) && !headers.contains_key("dpop-nonce")
+        {
+            if let Ok(value) = HeaderValue::from_str(&nonce) {
+                headers.insert(HeaderName::from_static("dpop-nonce"), value);
+            }
+        }
+    }
     res
 }
 
@@ -666,6 +698,7 @@ pub async fn run_local() -> anyhow::Result<()> {
         keys: Arc::new(RwLock::new(ring)),
         last_key_refresh: Arc::new(AtomicI64::new(util::now())),
         limiter: Arc::new(ratelimit::RateLimiter::new()),
+        started_at: util::now(),
     };
     let app = routes(state);
     let listener = TcpListener::bind(&cfg.bind).await?;
@@ -713,6 +746,8 @@ mod production_config_tests {
             hsts: true,
             trust_proxy: true,
             rate_limit: true,
+            dpop_nonce: true,
+            dpop_nonce_secret: Some("C".repeat(48)),
             recovery_enabled: true,
             max_passkeys: 10,
             audit_retention_days: 90,

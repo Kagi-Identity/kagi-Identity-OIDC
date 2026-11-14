@@ -6,7 +6,7 @@ All values are read when the process starts. Restart Kagi Identity after changin
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `KAGI_ENV` | `development` (or `production` on Vercel) | `development`, `test`, or `production`; production enforces HTTPS, PostgreSQL, secure cookies/HSTS, PAR, a trusted proxy, rate limiting, disabled demo seeding/auto-migration, and strong administrative/registration secrets |
+| `KAGI_ENV` | `development` (or `production` on Vercel) | `development`, `test`, or `production`; production enforces HTTPS, PostgreSQL, secure cookies/HSTS, PAR, DPoP nonces, a trusted proxy, rate limiting, disabled demo seeding/auto-migration, and strong administrative/registration/DPoP nonce secrets |
 | `KAGI_ISSUER` | `http://localhost:8080` | Public issuer origin; no path, query, fragment, or trailing slash |
 | `KAGI_BIND` | `127.0.0.1:8080` | Address and port to bind |
 | `KAGI_RP_ID` | Host derived from issuer | WebAuthn RP ID; bare hostname/domain, no scheme or port |
@@ -25,7 +25,9 @@ All values are read when the process starts. Restart Kagi Identity after changin
 | `KAGI_SEED_DEMO` | `0` | Seed the development `demo-web` client |
 | `KAGI_REQUIRE_PAR` | `0` | Require Pushed Authorization Requests |
 | `KAGI_REQUIRE_DPOP` | `0` | Require DPoP for applicable flows |
-| `KAGI_ADMIN_TOKEN` | Unset | Bearer token protecting the administrative endpoints (`/admin/keys/rotate`, `/admin/stats`); unset disables them |
+| `KAGI_DPOP_NONCE` | `1` in production | Require a server-issued DPoP nonce (`DPoP-Nonce`) in every proof (RFC 9449 §8) |
+| `KAGI_DPOP_NONCE_SECRET` | Unset (random per start outside production) | HMAC secret for stateless nonces; production requires ≥32 characters so all instances accept the same values |
+| `KAGI_ADMIN_TOKEN` | Unset | Bearer token protecting the administrative endpoints (`/admin/stats`, `/metrics`, `/admin/audit*`, `/admin/keys/rotate`); unset disables them |
 | `KAGI_REGISTRATION_TOKEN` | Unset | Initial access token required for dynamic client registration |
 | `KAGI_CORS_ORIGINS` | Unset | Comma-separated exact HTTPS origins allowed to call API endpoints |
 | `KAGI_COOKIE_SECURE` | Derived from HTTPS issuer | Add the Secure attribute to cookies |
@@ -68,11 +70,13 @@ KAGI_SEED_DEMO=0
 KAGI_ALLOW_SIGNUP=0
 KAGI_REQUIRE_PAR=1
 KAGI_REQUIRE_DPOP=1
+KAGI_DPOP_NONCE=1
 KAGI_RATE_LIMIT=1
 KAGI_TRUST_PROXY=1
 KAGI_AUTO_MIGRATE=0
 KAGI_CORS_ORIGINS=https://your-rp.example.com
 KAGI_ADMIN_TOKEN=retrieve-from-secret-manager
+KAGI_DPOP_NONCE_SECRET=retrieve-from-secret-manager
 KAGI_REGISTRATION_TOKEN=retrieve-from-secret-manager
 ```
 

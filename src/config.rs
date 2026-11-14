@@ -36,6 +36,12 @@ pub struct Config {
     pub trust_proxy: bool,
     /// Enable the shared PostgreSQL-backed rate limiter.
     pub rate_limit: bool,
+    /// Issue and require server-provided DPoP nonces (RFC 9449 §8). Enabled by
+    /// default in production; clients must echo the nonce in the proof.
+    pub dpop_nonce: bool,
+    /// HMAC key used to mint stateless DPoP nonces. Required in production so
+    /// that every instance accepts the same nonce.
+    pub dpop_nonce_secret: Option<String>,
     /// Enable single-use recovery codes as a passkey fallback.
     pub recovery_enabled: bool,
     /// Maximum number of passkeys per account.
@@ -231,6 +237,17 @@ impl Config {
         );
 
         Ok(Self {
+            dpop_nonce: flag("KAGI_DPOP_NONCE", production),
+            dpop_nonce_secret: non_empty("KAGI_DPOP_NONCE_SECRET").or_else(|| {
+                // Development convenience: a per-boot secret keeps nonces
+                // working without configuration. Production requires an
+                // explicit shared secret (validated at start-up).
+                if !production && flag("KAGI_DPOP_NONCE", production) {
+                    Some(crate::util::random_token(32))
+                } else {
+                    None
+                }
+            }),
             bind: non_empty("KAGI_BIND").unwrap_or_else(|| "127.0.0.1:8080".to_string()),
             rp_name: non_empty("KAGI_RP_NAME").unwrap_or_else(|| "Kagi Identity".to_string()),
             db_path: non_empty("KAGI_DB").unwrap_or_else(|| "kagi.db".to_string()),
@@ -321,6 +338,13 @@ impl Config {
         if !self.rate_limit {
             out.push("the in-process rate limiter is disabled (KAGI_RATE_LIMIT=0)".into());
         }
+        if self.dpop_nonce && self.dpop_nonce_secret.is_none() {
+            out.push(
+                "DPoP nonce validation is enabled without KAGI_DPOP_NONCE_SECRET; nonces are \
+                 instance-local and will not be accepted by other instances"
+                    .into(),
+            );
+        }
         if let Some(token) = &self.admin_token {
             if token.len() < 24 {
                 out.push("KAGI_ADMIN_TOKEN is shorter than 24 characters".into());
@@ -389,6 +413,8 @@ mod origin_tests {
                 hsts: false,
                 trust_proxy: false,
                 rate_limit: true,
+                dpop_nonce: false,
+                dpop_nonce_secret: None,
                 recovery_enabled: true,
                 max_passkeys: 10,
                 audit_retention_days: 90,

@@ -17,6 +17,12 @@ use std::sync::{Mutex, MutexGuard};
 
 const POSTGRES_SCHEMA: &str = include_str!("../supabase/schema.sql");
 
+/// Previous hash of the first chained event: 32 zero bytes, hex encoded.
+const AUDIT_GENESIS_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+/// Advisory-lock key for the audit chain (`kagi` in ASCII, hex).
+const AUDIT_CHAIN_LOCK: i64 = 0x6b616769;
+
 const SQLITE_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS users (
     id              TEXT PRIMARY KEY,
@@ -194,6 +200,12 @@ CREATE TABLE IF NOT EXISTS assertion_replay (
 );
 
 -- Security-relevant events shown in the account console and admin stats.
+--
+-- The trail is an append-only hash chain: `seq` is the position, `prev_hash`
+-- is the previous event's `hash`, and `hash` covers the whole event. A single
+-- UPDATE or DELETE therefore breaks every later link, which `audit_verify`
+-- reports. Rows written by earlier releases predate the chain (NULL seq/hash)
+-- and are reported as `unhashed` instead of silently passing verification.
 CREATE TABLE IF NOT EXISTS audit_events (
     id          TEXT PRIMARY KEY,
     user_id     TEXT,
@@ -202,10 +214,24 @@ CREATE TABLE IF NOT EXISTS audit_events (
     detail      TEXT,
     ip          TEXT,
     user_agent  TEXT,
-    created_at  INTEGER NOT NULL
+    created_at  INTEGER NOT NULL,
+    seq         INTEGER,
+    prev_hash   TEXT,
+    hash        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_events(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at);
+
+-- Chain head ('head') and the pruning anchor ('anchor'). The anchor records
+-- the last event removed by retention so verification can start from it
+-- instead of treating the oldest retained row as a broken link. The unique
+-- index on `seq` is created after the column migrations in `Db::migrate`.
+CREATE TABLE IF NOT EXISTS audit_head (
+    id          TEXT PRIMARY KEY,
+    seq         INTEGER NOT NULL,
+    hash        TEXT NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
 
 -- Single-use recovery codes. Only the SHA-256 of a normalised code is stored.
 CREATE TABLE IF NOT EXISTS recovery_codes (
@@ -973,6 +999,9 @@ impl Db {
             ),
             ("auth_codes", "claims", "TEXT"),
             ("refresh_tokens", "claims", "TEXT"),
+            ("audit_events", "seq", "INTEGER"),
+            ("audit_events", "prev_hash", "TEXT"),
+            ("audit_events", "hash", "TEXT"),
         ] {
             let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {decl}");
             if let Err(e) = c.execute_batch(&sql) {
@@ -982,6 +1011,9 @@ impl Db {
                 }
             }
         }
+        // Created after the column migrations: on an upgraded database the
+        // column does not exist yet while the schema batch runs.
+        c.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_seq ON audit_events(seq)")?;
         c.execute(
             "UPDATE sessions SET last_seen_at = created_at WHERE last_seen_at = 0",
             params![],
@@ -1092,13 +1124,109 @@ impl Db {
                 "DELETE FROM recovery_codes WHERE used_at IS NOT NULL AND used_at < ?1",
                 params![now - 30 * 86400],
             )?;
-            if audit_retention_days > 0 {
-                c.execute(
-                    "DELETE FROM audit_events WHERE created_at < ?1",
-                    params![now - audit_retention_days * 86400],
+            Ok(())
+        })?;
+        if audit_retention_days > 0 {
+            // Pruning must advance the chain anchor atomically, so it runs in
+            // its own transaction after the lock above has been released.
+            self.prune_audit(now - audit_retention_days * 86400)?;
+        }
+        Ok(())
+    }
+
+    /// Append one event to the tamper-evident audit chain.
+    ///
+    /// The read of the current head, the insert and the head update happen in
+    /// one transaction. SQLite serialises via the process mutex; PostgreSQL
+    /// additionally takes a transaction-scoped advisory lock so independently
+    /// scaled instances cannot fork the chain.
+    pub fn append_audit(
+        &self,
+        user_id: Option<&str>,
+        client_id: Option<&str>,
+        kind: &str,
+        detail: &str,
+        ip: Option<&str>,
+        user_agent: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let id = crate::util::new_id();
+        let created_at = crate::util::now();
+        self.tx(|tx| {
+            if self.backend == "postgres" {
+                tx.execute(
+                    "SELECT pg_advisory_xact_lock(?1)",
+                    params![AUDIT_CHAIN_LOCK],
                 )?;
             }
+            let head = tx
+                .query_row(
+                    "SELECT seq, hash FROM audit_head WHERE id = 'head'",
+                    params![],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            let (previous_seq, prev_hash) = head.unwrap_or((0, AUDIT_GENESIS_HASH.to_string()));
+            let seq = previous_seq + 1;
+            let hash = audit_hash(
+                seq, &id, created_at, user_id, client_id, kind, detail, ip, user_agent, &prev_hash,
+            );
+            tx.execute(
+                "INSERT INTO audit_events
+                     (id, user_id, client_id, kind, detail, ip, user_agent, created_at,
+                      seq, prev_hash, hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    id, user_id, client_id, kind, detail, ip, user_agent, created_at, seq,
+                    prev_hash, hash
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO audit_head (id, seq, hash, updated_at)
+                 VALUES ('head', ?1, ?2, ?3)
+                 ON CONFLICT (id) DO UPDATE SET seq = ?1, hash = ?2, updated_at = ?3",
+                params![seq, hash, created_at],
+            )?;
             Ok(())
+        })
+    }
+
+    /// Delete audit events older than `cutoff`, advancing the chain anchor to
+    /// the last removed event so the retained suffix still verifies.
+    pub fn prune_audit(&self, cutoff: i64) -> anyhow::Result<usize> {
+        self.tx(|tx| {
+            let anchor = tx
+                .query_row(
+                    "SELECT seq, hash FROM audit_head WHERE id = 'anchor'",
+                    params![],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            let last_removed = tx
+                .query_row(
+                    "SELECT seq, hash FROM audit_events
+                     WHERE created_at < ?1 AND seq IS NOT NULL
+                     ORDER BY seq DESC LIMIT 1",
+                    params![cutoff],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            let removed = tx.execute(
+                "DELETE FROM audit_events WHERE created_at < ?1",
+                params![cutoff],
+            )?;
+            if let Some((seq, hash)) = last_removed {
+                // Never move the anchor backwards if a later prune races an
+                // earlier one.
+                if anchor.as_ref().is_none_or(|(current, _)| seq > *current) {
+                    tx.execute(
+                        "INSERT INTO audit_head (id, seq, hash, updated_at)
+                         VALUES ('anchor', ?1, ?2, ?3)
+                         ON CONFLICT (id) DO UPDATE SET seq = ?1, hash = ?2, updated_at = ?3",
+                        params![seq, hash, crate::util::now()],
+                    )?;
+                }
+            }
+            Ok(removed)
         })
     }
 }
@@ -1142,6 +1270,26 @@ pub struct AuditEvent {
     pub ip: Option<String>,
     pub user_agent: Option<String>,
     pub created_at: i64,
+    /// Chain position. `None` for events written before the chain existed.
+    pub seq: Option<i64>,
+    pub prev_hash: Option<String>,
+    pub hash: Option<String>,
+}
+
+/// Result of re-walking the audit hash chain.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AuditVerification {
+    pub ok: bool,
+    /// Chained events that were re-hashed and matched.
+    pub checked: i64,
+    /// Legacy events without a chain position (informational, not a failure).
+    pub unhashed: i64,
+    pub anchor_seq: i64,
+    pub head_seq: i64,
+    pub head_hash: Option<String>,
+    /// First detected problem, if any (`gap`, `broken link`, `hash mismatch`).
+    pub error: Option<String>,
+    pub checked_at: i64,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -1501,11 +1649,7 @@ pub fn revoke_session_tokens(c: &Connection, session_id: &str) -> anyhow::Result
 
 /// Revoke every token a user holds for one client. Used when the user
 /// withdraws consent from the account console.
-pub fn revoke_client_tokens(
-    c: &Connection,
-    user_id: &str,
-    client_id: &str,
-) -> anyhow::Result<()> {
+pub fn revoke_client_tokens(c: &Connection, user_id: &str, client_id: &str) -> anyhow::Result<()> {
     c.execute(
         "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?1 AND client_id = ?2",
         params![user_id, client_id],
@@ -1601,30 +1745,66 @@ pub fn delete_consent(c: &Connection, user_id: &str, client_id: &str) -> anyhow:
     )?)
 }
 
-pub fn record_audit(
-    c: &Connection,
+/// Canonical, unambiguous encoding of every field covered by the chain hash.
+///
+/// Length prefixes keep `("ab", "c")` and `("a", "bc")` distinct without
+/// depending on JSON escaping details, so verification is stable across
+/// backends and releases.
+#[allow(clippy::too_many_arguments)]
+fn audit_hash(
+    seq: i64,
+    id: &str,
+    created_at: i64,
     user_id: Option<&str>,
     client_id: Option<&str>,
     kind: &str,
     detail: &str,
     ip: Option<&str>,
     user_agent: Option<&str>,
-) -> anyhow::Result<()> {
-    c.execute(
-        "INSERT INTO audit_events (id, user_id, client_id, kind, detail, ip, user_agent, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            crate::util::new_id(),
-            user_id,
-            client_id,
-            kind,
-            detail,
-            ip,
-            user_agent,
-            crate::util::now()
-        ],
-    )?;
-    Ok(())
+    prev_hash: &str,
+) -> String {
+    use std::fmt::Write;
+
+    let mut canonical = String::with_capacity(256);
+    canonical.push_str("kagi-audit-v1\n");
+    let mut field = |value: Option<&str>| {
+        match value {
+            Some(value) => {
+                let _ = write!(canonical, "{}:", value.len());
+                canonical.push_str(value);
+            }
+            None => canonical.push_str("-1:"),
+        }
+        canonical.push('\n');
+    };
+
+    field(Some(prev_hash));
+    field(Some(&seq.to_string()));
+    field(Some(id));
+    field(Some(&created_at.to_string()));
+    field(user_id);
+    field(client_id);
+    field(Some(kind));
+    field(Some(detail));
+    field(ip);
+    field(user_agent);
+    crate::util::sha256_hex(&canonical)
+}
+
+fn map_audit(row: &Row) -> Result<AuditEvent> {
+    Ok(AuditEvent {
+        id: row.get("id")?,
+        user_id: row.get("user_id")?,
+        client_id: row.get("client_id")?,
+        kind: row.get("kind")?,
+        detail: row.get("detail").unwrap_or_default(),
+        ip: row.get("ip")?,
+        user_agent: row.get("user_agent")?,
+        created_at: row.get("created_at")?,
+        seq: row.get("seq")?,
+        prev_hash: row.get("prev_hash")?,
+        hash: row.get("hash")?,
+    })
 }
 
 pub fn recent_audit(c: &Connection, user_id: &str, limit: i64) -> anyhow::Result<Vec<AuditEvent>> {
@@ -1633,21 +1813,125 @@ pub fn recent_audit(c: &Connection, user_id: &str, limit: i64) -> anyhow::Result
          ORDER BY created_at DESC LIMIT ?2",
         params![user_id, limit.clamp(1, 100)],
     )?;
-    Ok(rows
-        .iter()
-        .map(|r| {
-            Ok(AuditEvent {
-                id: r.get("id")?,
-                user_id: r.get("user_id")?,
-                client_id: r.get("client_id")?,
-                kind: r.get("kind")?,
-                detail: r.get("detail")?,
-                ip: r.get("ip")?,
-                user_agent: r.get("user_agent")?,
-                created_at: r.get("created_at")?,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?)
+    rows.iter()
+        .map(map_audit)
+        .collect::<Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+/// Return the chained audit events after `after_seq`, oldest first.
+pub fn audit_page(c: &Connection, after_seq: i64, limit: i64) -> anyhow::Result<Vec<AuditEvent>> {
+    let rows = c.query_all(
+        "SELECT * FROM audit_events
+         WHERE seq IS NOT NULL AND seq > ?1
+         ORDER BY seq ASC LIMIT ?2",
+        params![after_seq, limit.clamp(1, 5000)],
+    )?;
+    rows.iter()
+        .map(map_audit)
+        .collect::<Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+/// Current chain head as `(seq, hash)`, if anything has been chained yet.
+pub fn audit_head(c: &Connection) -> anyhow::Result<Option<(i64, String)>> {
+    Ok(c.query_row(
+        "SELECT seq, hash FROM audit_head WHERE id = 'head'",
+        params![],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()?)
+}
+
+/// Re-walk the chain from the pruning anchor and re-hash every event.
+pub fn audit_verify(c: &Connection) -> anyhow::Result<AuditVerification> {
+    let anchor = c
+        .query_row(
+            "SELECT seq, hash FROM audit_head WHERE id = 'anchor'",
+            params![],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let head = audit_head(c)?;
+    let (mut expected_seq, mut prev_hash) = match &anchor {
+        Some((seq, hash)) => (seq + 1, hash.clone()),
+        None => (1, AUDIT_GENESIS_HASH.to_string()),
+    };
+    let anchor_seq = anchor.map(|(seq, _)| seq).unwrap_or(0);
+    let unhashed: i64 = c.query_row(
+        "SELECT COUNT(*) FROM audit_events WHERE seq IS NULL",
+        params![],
+        |row| row.get(0),
+    )?;
+
+    let rows = c.query_all(
+        "SELECT * FROM audit_events WHERE seq IS NOT NULL ORDER BY seq ASC",
+        params![],
+    )?;
+    let mut checked = 0i64;
+    let mut error = None;
+    let mut last_seq = anchor_seq;
+    for row in rows.iter() {
+        let event = map_audit(row)?;
+        let seq = event.seq.unwrap_or_default();
+        if seq != expected_seq {
+            error = Some(format!(
+                "chain gap: expected seq {expected_seq}, found {seq}"
+            ));
+            break;
+        }
+        let prev = event.prev_hash.clone().unwrap_or_default();
+        if prev != prev_hash {
+            error = Some(format!("broken link at seq {seq}"));
+            break;
+        }
+        let computed = audit_hash(
+            seq,
+            &event.id,
+            event.created_at,
+            event.user_id.as_deref(),
+            event.client_id.as_deref(),
+            &event.kind,
+            &event.detail,
+            event.ip.as_deref(),
+            event.user_agent.as_deref(),
+            &prev,
+        );
+        if event.hash.as_deref() != Some(computed.as_str()) {
+            error = Some(format!("hash mismatch at seq {seq}"));
+            break;
+        }
+        prev_hash = computed;
+        expected_seq += 1;
+        last_seq = seq;
+        checked += 1;
+    }
+
+    // A head that does not describe the last walked event means rows were
+    // removed without advancing the anchor, or the head itself was edited.
+    if error.is_none() {
+        match &head {
+            Some((seq, hash)) if *seq == last_seq && hash == &prev_hash => {}
+            Some((seq, _)) => {
+                error = Some(format!(
+                    "chain head mismatch: head seq {seq}, verified through {last_seq}"
+                ))
+            }
+            None if checked == 0 => {}
+            None => error = Some("chain head is missing".to_string()),
+        }
+    }
+
+    Ok(AuditVerification {
+        ok: error.is_none(),
+        checked,
+        unhashed,
+        anchor_seq,
+        head_seq: head.as_ref().map(|(seq, _)| *seq).unwrap_or(0),
+        head_hash: head.map(|(_, hash)| hash),
+        error,
+        checked_at: crate::util::now(),
+    })
 }
 
 /// Replace all unused recovery codes for a user. Returns nothing: callers show
@@ -1895,6 +2179,9 @@ mod schema_regression_tests {
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS last_seen_at"));
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS session_id"));
         assert!(schema.contains("CREATE TABLE IF NOT EXISTS audit_events"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS seq BIGINT"));
+        assert!(schema.contains("CREATE TABLE IF NOT EXISTS audit_head"));
+        assert!(schema.contains("CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_seq"));
         assert!(schema.contains("CREATE TABLE IF NOT EXISTS recovery_codes"));
     }
 
@@ -1936,5 +2223,135 @@ mod schema_regression_tests {
         assert!(message.contains("KAGI_DATABASE_URL"));
         assert!(!message.contains("very-secret-password"));
         assert!(!message.contains("service-user"));
+    }
+
+    fn audit_db() -> super::Db {
+        super::Db::open_with_options(None, ":memory:", true).expect("in-memory sqlite db")
+    }
+
+    fn append(db: &super::Db, count: usize) {
+        for i in 0..count {
+            db.append_audit(
+                Some("user-1"),
+                Some("client-1"),
+                "test.event",
+                &format!("detail {i}"),
+                Some("127.0.0.1"),
+                Some("test-agent"),
+            )
+            .expect("append audit");
+        }
+    }
+
+    #[test]
+    fn audit_chain_verifies_and_detects_tampering() {
+        let db = audit_db();
+        append(&db, 5);
+
+        let verification = db.with(super::audit_verify).expect("verify chain");
+        assert!(verification.ok, "{:?}", verification.error);
+        assert_eq!(verification.checked, 5);
+        assert_eq!(verification.head_seq, 5);
+        assert_eq!(verification.unhashed, 0);
+
+        db.with(|c| {
+            c.execute(
+                "UPDATE audit_events SET detail = 'tampered' WHERE seq = 2",
+                super::params![],
+            )?;
+            Ok(())
+        })
+        .expect("tamper");
+
+        let verification = db.with(super::audit_verify).expect("verify chain");
+        assert!(!verification.ok);
+        assert!(
+            verification
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("hash mismatch"),
+            "{:?}",
+            verification.error
+        );
+    }
+
+    #[test]
+    fn audit_chain_detects_a_removed_link() {
+        let db = audit_db();
+        append(&db, 4);
+
+        db.with(|c| {
+            c.execute("DELETE FROM audit_events WHERE seq = 2", super::params![])?;
+            Ok(())
+        })
+        .expect("delete link");
+
+        let verification = db.with(super::audit_verify).expect("verify chain");
+        assert!(!verification.ok);
+        assert!(verification
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("chain gap"));
+    }
+
+    #[test]
+    fn audit_retention_advances_the_anchor_and_keeps_the_suffix_verifiable() {
+        let db = audit_db();
+        append(&db, 5);
+        db.with(|c| {
+            c.execute(
+                "UPDATE audit_events SET created_at = 1 WHERE seq <= 2",
+                super::params![],
+            )?;
+            Ok(())
+        })
+        .expect("age rows");
+
+        let removed = db.prune_audit(crate::util::now()).expect("prune");
+        assert_eq!(removed, 2);
+
+        let verification = db.with(super::audit_verify).expect("verify chain");
+        assert!(verification.ok, "{:?}", verification.error);
+        assert_eq!(verification.anchor_seq, 2);
+        assert_eq!(verification.checked, 3);
+        assert_eq!(verification.head_seq, 5);
+    }
+
+    #[test]
+    fn audit_chain_skips_legacy_rows_but_links_new_events() {
+        let db = audit_db();
+        // A pre-chain event as written by an older release.
+        db.with(|c| {
+            c.execute(
+                "INSERT INTO audit_events (id, kind, detail, created_at) VALUES ('legacy', 'old', 'x', 1)",
+                super::params![],
+            )?;
+            Ok(())
+        })
+        .expect("legacy row");
+        append(&db, 2);
+
+        let verification = db.with(super::audit_verify).expect("verify chain");
+        assert!(verification.ok, "{:?}", verification.error);
+        assert_eq!(verification.unhashed, 1);
+        assert_eq!(verification.checked, 2);
+    }
+
+    #[test]
+    fn audit_pages_are_cursor_ordered() {
+        let db = audit_db();
+        append(&db, 6);
+        let first = db.with(|c| super::audit_page(c, 0, 4)).expect("first page");
+        assert_eq!(first.len(), 4);
+        assert_eq!(first[0].seq, Some(1));
+        let cursor = first.last().and_then(|event| event.seq).unwrap();
+        let second = db
+            .with(|c| super::audit_page(c, cursor, 4))
+            .expect("second page");
+        assert_eq!(second.len(), 2);
+        assert_eq!(second[0].seq, Some(5));
+        assert_eq!(second[1].seq, Some(6));
     }
 }
