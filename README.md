@@ -275,12 +275,18 @@ Set `KAGI_ADMIN_TOKEN` to enable these endpoints (all require `Authorization: Be
 | `GET /admin/audit/verify` | Re-walks the chain; `200` when intact, `409` with the failing position otherwise |
 | `GET /admin/audit/export?after=&limit=` | NDJSON archive with `X-Kagi-Next-After` for the next page |
 | `GET /metrics` | Prometheus gauges for users, credentials, sessions, tokens and the chain position |
+| `GET /admin/users/{id}` | Read-only account view: live sessions, active tokens, passkeys and last activity, with no email or credential material |
 | `POST /admin/users/{id}/revoke` | Incident response: delete the user's sessions, revoke their access/refresh tokens, deny pending device codes and notify relying parties |
+| `POST /admin/clients/{id}/rotate-secret` | Rotate a confidential client secret; the old value keeps working for `KAGI_CLIENT_SECRET_GRACE` seconds |
 | `POST /admin/keys/rotate` | Rotate the signing key |
 
 A modified, deleted or reordered audit row changes a later `prev_hash`/`hash`, so verification fails and names the first bad `seq`. Events written before the chain existed have NULL `seq`/`hash` and are reported as `unhashed` rather than counted as a failure. When retention removes old events, the anchor advances so the retained suffix still verifies.
 
 `POST /admin/users/{id}/revoke` is the emergency stop for a suspected account compromise: it is idempotent, reports what changed, writes an `admin.user_revoke` event to the chain, and sends back-channel logout for each deleted session. UserInfo, introspection and the other kagi endpoints re-check `access_tokens.revoked`, so tokens die immediately here; a downstream API that only verifies the JWT signature against JWKS keeps accepting already-issued tokens until `KAGI_ACCESS_TTL` elapses.
+
+`POST /admin/clients/{id}/rotate-secret` returns the new secret once (it is stored hashed) and keeps the previous one valid until the grace deadline, so a client can be reconfigured without an outage. Public clients are rejected with `400`, an unknown client returns `404`, and a concurrent rotation loses the compare-and-swap with `409`. The rotation is recorded as `admin.client_secret_rotate`.
+
+Refresh tokens have both a per-token `KAGI_REFRESH_TTL` and an absolute `KAGI_REFRESH_MAX_TTL` measured from the original sign-in. Rotation cannot extend a family past that absolute deadline; a token used after it is rejected with `invalid_grant` and the whole family is revoked.
 
 
 

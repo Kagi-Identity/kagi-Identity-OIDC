@@ -27,7 +27,7 @@ All values are read when the process starts. Restart Kagi Identity after changin
 | `KAGI_REQUIRE_DPOP` | `0` | Require DPoP for applicable flows |
 | `KAGI_DPOP_NONCE` | `1` in production | Require a server-issued DPoP nonce (`DPoP-Nonce`) in every proof (RFC 9449 §8) |
 | `KAGI_DPOP_NONCE_SECRET` | Unset (random per start outside production) | HMAC secret for stateless nonces; production requires ≥32 characters so all instances accept the same values |
-| `KAGI_ADMIN_TOKEN` | Unset | Bearer token protecting the administrative endpoints (`/admin/stats`, `/metrics`, `/admin/audit*`, `/admin/users/{id}/revoke`, `/admin/keys/rotate`); unset disables them |
+| `KAGI_ADMIN_TOKEN` | Unset | Bearer token protecting the administrative endpoints (`/admin/stats`, `/metrics`, `/admin/audit*`, `/admin/users/*`, `/admin/clients/{id}/rotate-secret`, `/admin/keys/rotate`); unset disables them |
 | `KAGI_REGISTRATION_TOKEN` | Unset | Initial access token required for dynamic client registration |
 | `KAGI_CORS_ORIGINS` | Unset | Comma-separated exact HTTPS origins allowed to call API endpoints |
 | `KAGI_COOKIE_SECURE` | Derived from HTTPS issuer | Add the Secure attribute to cookies |
@@ -49,6 +49,8 @@ All values are seconds and must be positive, except idle TTL may be `0` to disab
 | `KAGI_CODE_TTL` | `60` | Authorization-code lifetime |
 | `KAGI_ACCESS_TTL` | `300` | Access-token lifetime (5 minutes) |
 | `KAGI_REFRESH_TTL` | `2592000` | Refresh-token lifetime (30 days) |
+| `KAGI_REFRESH_MAX_TTL` | `2592000` | Absolute lifetime of a refresh-token family from the original sign-in (30 days); rotation cannot extend past it. Must be >= `KAGI_REFRESH_TTL` |
+| `KAGI_CLIENT_SECRET_GRACE` | `86400` | Seconds an old confidential-client secret remains valid after a rotation (`0` disables the grace period) |
 | `KAGI_ID_TTL` | `300` | ID-token lifetime (5 minutes) |
 | `KAGI_PAR_TTL` | `90` | PAR request URI lifetime |
 | `KAGI_DEVICE_TTL` | `600` | RFC 8628 device-code lifetime |

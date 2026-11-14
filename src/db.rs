@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS clients (
     id                    TEXT PRIMARY KEY,
     name                  TEXT NOT NULL,
     secret_hash           TEXT,
+    previous_secret_hash  TEXT,
+    previous_secret_expires_at INTEGER,
     redirect_uris         TEXT NOT NULL,
     post_logout_redirect_uris TEXT NOT NULL DEFAULT '[]',
     grant_types           TEXT NOT NULL,
@@ -991,6 +993,8 @@ impl Db {
             ("sessions", "ip", "TEXT"),
             ("access_tokens", "session_id", "TEXT"),
             ("clients", "registration_token_hash", "TEXT"),
+            ("clients", "previous_secret_hash", "TEXT"),
+            ("clients", "previous_secret_expires_at", "INTEGER"),
             ("clients", "backchannel_logout_uri", "TEXT"),
             (
                 "clients",
@@ -1318,6 +1322,10 @@ pub struct Client {
     pub id: String,
     pub name: String,
     pub secret_hash: Option<String>,
+    /// Grace-period secret kept after an administrative rotation. It is only
+    /// accepted until `previous_secret_expires_at`.
+    pub previous_secret_hash: Option<String>,
+    pub previous_secret_expires_at: Option<i64>,
     pub redirect_uris: Vec<String>,
     pub post_logout_redirect_uris: Vec<String>,
     pub grant_types: Vec<String>,
@@ -1443,6 +1451,8 @@ fn map_client(row: &Row) -> Result<Client> {
         id: row.get("id")?,
         name: row.get("name")?,
         secret_hash: row.get("secret_hash")?,
+        previous_secret_hash: row.get("previous_secret_hash")?,
+        previous_secret_expires_at: row.get("previous_secret_expires_at")?,
         redirect_uris: json_strings(&row.get::<_, String>("redirect_uris")?),
         post_logout_redirect_uris: json_strings(
             &row.get::<_, String>("post_logout_redirect_uris")?,
@@ -1528,6 +1538,29 @@ pub fn load_client(c: &Connection, id: &str) -> anyhow::Result<Option<Client>> {
         map_client,
     )
     .optional()?)
+}
+
+/// Replace a confidential client's secret, moving the old hash into the
+/// grace slot. The compare-and-swap on `secret_hash` makes concurrent
+/// rotations deterministic: only one caller can replace the loaded hash.
+/// Returns `false` when the client is missing, has no secret, or someone else
+/// rotated it first.
+pub fn rotate_client_secret(
+    c: &Connection,
+    client_id: &str,
+    current_hash: &str,
+    new_hash: &str,
+    grace_expires_at: i64,
+) -> anyhow::Result<bool> {
+    let changed = c.execute(
+        "UPDATE clients
+         SET previous_secret_hash = secret_hash,
+             previous_secret_expires_at = ?1,
+             secret_hash = ?2
+         WHERE id = ?3 AND secret_hash = ?4",
+        params![grace_expires_at, new_hash, client_id, current_hash],
+    )?;
+    Ok(changed == 1)
 }
 
 /// Clients that hold a token for this user (optionally for one browser
@@ -2018,6 +2051,73 @@ pub fn consume_recovery_code(
     Ok(changed == 1)
 }
 
+/// Minimal, non-secret account state for the administrative user view.
+/// Counts are of *currently usable* credentials so that an operator can tell a
+/// dormant account from one with live sessions and tokens.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct UserOverview {
+    pub passkeys: i64,
+    pub sessions: i64,
+    pub active_access_tokens: i64,
+    pub active_refresh_tokens: i64,
+    pub audit_events: i64,
+    /// Latest session activity (0 when the account has never had a session).
+    pub last_seen_at: i64,
+    /// Latest issue time across access and refresh tokens.
+    pub last_token_issued_at: i64,
+    /// Latest passkey assertion.
+    pub last_credential_used_at: i64,
+    /// Latest audit event attributed to the user.
+    pub last_audit_at: i64,
+}
+
+impl UserOverview {
+    /// Best-effort "last activity" across every signal the operator can see.
+    pub fn last_activity_at(&self) -> i64 {
+        self.last_seen_at
+            .max(self.last_token_issued_at)
+            .max(self.last_credential_used_at)
+            .max(self.last_audit_at)
+    }
+}
+
+pub fn user_overview(c: &Connection, user_id: &str) -> anyhow::Result<UserOverview> {
+    let now = crate::util::now();
+    let count = |sql: &str| -> anyhow::Result<i64> {
+        Ok(c.query_row(sql, params![user_id, now], |r| r.get(0))?)
+    };
+    let last = |sql: &str| -> anyhow::Result<i64> {
+        Ok(c.query_row(sql, params![user_id], |r| r.get(0))?)
+    };
+    let refresh_issued =
+        last("SELECT COALESCE(MAX(issued_at), 0) FROM refresh_tokens WHERE user_id = ?1")?;
+    let access_issued =
+        last("SELECT COALESCE(MAX(issued_at), 0) FROM access_tokens WHERE user_id = ?1")?;
+    Ok(UserOverview {
+        passkeys: last("SELECT COUNT(*) FROM credentials WHERE user_id = ?1")?,
+        sessions: count("SELECT COUNT(*) FROM sessions WHERE user_id = ?1 AND expires_at > ?2")?,
+        active_access_tokens: count(
+            "SELECT COUNT(*) FROM access_tokens
+             WHERE user_id = ?1 AND revoked = 0 AND expires_at > ?2",
+        )?,
+        active_refresh_tokens: count(
+            "SELECT COUNT(*) FROM refresh_tokens
+             WHERE user_id = ?1 AND revoked = 0 AND expires_at > ?2",
+        )?,
+        audit_events: last("SELECT COUNT(*) FROM audit_events WHERE user_id = ?1")?,
+        last_seen_at: last(
+            "SELECT COALESCE(MAX(last_seen_at), 0) FROM sessions WHERE user_id = ?1",
+        )?,
+        last_token_issued_at: refresh_issued.max(access_issued),
+        last_credential_used_at: last(
+            "SELECT COALESCE(MAX(last_used_at), 0) FROM credentials WHERE user_id = ?1",
+        )?,
+        last_audit_at: last(
+            "SELECT COALESCE(MAX(created_at), 0) FROM audit_events WHERE user_id = ?1",
+        )?,
+    })
+}
+
 pub fn stats(c: &Connection) -> anyhow::Result<Stats> {
     let count =
         |sql: &str| -> anyhow::Result<i64> { Ok(c.query_row(sql, params![], |r| r.get(0))?) };
@@ -2219,6 +2319,8 @@ mod schema_regression_tests {
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS session_id"));
         assert!(schema.contains("CREATE TABLE IF NOT EXISTS audit_events"));
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS seq BIGINT"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS previous_secret_hash"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS previous_secret_expires_at"));
         assert!(schema.contains("CREATE TABLE IF NOT EXISTS audit_head"));
         assert!(schema.contains("CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_seq"));
         assert!(schema.contains("CREATE TABLE IF NOT EXISTS recovery_codes"));
@@ -2378,6 +2480,21 @@ mod schema_regression_tests {
         assert_eq!(verification.checked, 2);
     }
 
+    fn seed_client(db: &super::Db, id: &str, secret_hash: Option<&str>) {
+        let now = crate::util::now();
+        db.with(|c| {
+            c.execute(
+                "INSERT INTO clients
+                     (id, name, secret_hash, redirect_uris, grant_types, scopes, auth_method, created_at)
+                 VALUES (?1, ?1, ?2, '[]', '[\"authorization_code\"]', '[\"openid\"]',
+                         'client_secret_basic', ?3)",
+                super::params![id, secret_hash, now],
+            )?;
+            Ok(())
+        })
+        .expect("seed client");
+    }
+
     fn seed_shared_user(db: &super::Db) {
         let now = crate::util::now();
         db.with(|c| {
@@ -2466,6 +2583,72 @@ mod schema_regression_tests {
         assert_eq!(again.refresh_tokens, 0);
         assert_eq!(again.access_tokens, 0);
         assert_eq!(again.device_codes, 0);
+    }
+
+    #[test]
+    fn user_overview_reports_live_state_and_drops_after_revocation() {
+        let db = audit_db();
+        seed_shared_user(&db);
+
+        let overview = db
+            .with(|c| super::user_overview(c, "u1"))
+            .expect("user overview");
+        assert_eq!(overview.sessions, 1);
+        assert_eq!(overview.active_refresh_tokens, 1);
+        assert_eq!(overview.active_access_tokens, 1);
+        assert_eq!(overview.passkeys, 0);
+        assert!(overview.last_token_issued_at > 0);
+        assert!(overview.last_activity_at() >= overview.last_token_issued_at);
+
+        db.with(|c| super::revoke_user_access(c, "u1"))
+            .expect("revoke user");
+        let after = db
+            .with(|c| super::user_overview(c, "u1"))
+            .expect("overview after revoke");
+        assert_eq!(after.sessions, 0);
+        assert_eq!(after.active_refresh_tokens, 0);
+        assert_eq!(after.active_access_tokens, 0);
+        // Historical signals survive revocation so the operator can still see
+        // when the account was last active.
+        assert_eq!(after.last_token_issued_at, overview.last_token_issued_at);
+    }
+
+    #[test]
+    fn secret_rotation_moves_the_old_hash_into_the_grace_slot() {
+        let db = audit_db();
+        let old_hash = crate::util::random_token(16);
+        let new_hash = crate::util::random_token(16);
+        seed_client(&db, "c1", Some(old_hash.as_str()));
+        let expires = crate::util::now() + 60;
+
+        let rotated = db
+            .with(|c| super::rotate_client_secret(c, "c1", &old_hash, &new_hash, expires))
+            .expect("rotate");
+        assert!(rotated);
+
+        let client = db
+            .with(|c| super::load_client(c, "c1"))
+            .expect("load client")
+            .expect("client exists");
+        assert_eq!(client.secret_hash.as_deref(), Some(new_hash.as_str()));
+        assert_eq!(
+            client.previous_secret_hash.as_deref(),
+            Some(old_hash.as_str())
+        );
+        assert_eq!(client.previous_secret_expires_at, Some(expires));
+
+        // A concurrent rotation that still holds the old hash loses the CAS.
+        let stale = db
+            .with(|c| super::rotate_client_secret(c, "c1", &old_hash, "third", expires))
+            .expect("stale rotate");
+        assert!(!stale);
+
+        // Public clients have no secret to rotate.
+        seed_client(&db, "public", None);
+        let public = db
+            .with(|c| super::rotate_client_secret(c, "public", "", "x", expires))
+            .expect("public rotate");
+        assert!(!public);
     }
 
     #[test]

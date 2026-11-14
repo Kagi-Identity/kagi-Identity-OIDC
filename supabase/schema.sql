@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS clients (
     id                        TEXT PRIMARY KEY,
     name                      TEXT NOT NULL,
     secret_hash               TEXT,
+    previous_secret_hash      TEXT,
+    previous_secret_expires_at BIGINT,
     redirect_uris             TEXT NOT NULL,
     post_logout_redirect_uris TEXT NOT NULL DEFAULT '[]',
     grant_types               TEXT NOT NULL,
@@ -220,6 +222,8 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS user_agent TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ip TEXT;
 ALTER TABLE access_tokens ADD COLUMN IF NOT EXISTS session_id TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS registration_token_hash TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS previous_secret_hash TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS previous_secret_expires_at BIGINT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS backchannel_logout_uri TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS backchannel_logout_session_required BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE auth_codes ADD COLUMN IF NOT EXISTS claims TEXT;
