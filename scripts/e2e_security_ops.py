@@ -4,6 +4,8 @@
 * tamper-evident audit chain (listing, verification, NDJSON export)
 * Prometheus /metrics and the admin token gate
 * DPoP nonce issuance and enforcement (RFC 9449 section 8)
+* administrative user revocation, user inspection and secret rotation
+* the absolute refresh-token lifetime
 
 Start the server with nonce enforcement enabled, for example:
     KAGI_SEED_DEMO=1 KAGI_ADMIN_TOKEN=test-admin \
@@ -262,6 +264,26 @@ if DB and os.path.exists(DB):
     finally:
         connection.close()
 
+    r = requests.get(BASE + f"/admin/users/{revoked_user}", headers=admin, timeout=10)
+    view = r.json() if r.status_code == 200 else {}
+    activity = view.get("activity", {})
+    check("admin user view succeeds", r.status_code == 200, (r.status_code, view))
+    check(
+        "admin user view reports live state without PII",
+        activity.get("sessions") == 1
+        and activity.get("active_refresh_tokens") == 1
+        and activity.get("active_access_tokens") == 1
+        and "email" not in view.get("user", {}),
+        view,
+    )
+
+    r = requests.get(BASE + "/admin/users/no-such-user", headers=admin, timeout=10)
+    check(
+        "admin user view reports an unknown user",
+        r.status_code == 404,
+        (r.status_code, r.text[:200]),
+    )
+
     r = requests.post(BASE + f"/admin/users/{revoked_user}/revoke", timeout=10)
     check(
         "user revocation rejects an anonymous request",
@@ -329,6 +351,186 @@ if DB and os.path.exists(DB):
     )
 else:
     print("SKIP administrative revocation (KAGI_DB is not a local SQLite file)")
+
+# ---------------- absolute refresh-token lifetime ----------------
+if DB and os.path.exists(DB):
+    now = int(time.time())
+    rt_user = "e2e-rt-user"
+    expired_token = "e2e-absolute-expired"
+    fresh_token = "e2e-absolute-fresh"
+    connection = sqlite3.connect(DB, timeout=10)
+    try:
+        connection.execute(
+            "INSERT OR REPLACE INTO users (id, username, display_name, created_at) VALUES (?, ?, ?, ?)",
+            (rt_user, rt_user, "E2E RT", now),
+        )
+        for token, auth_time, family in (
+            (expired_token, now - 31 * 86400, "e2e-family-expired"),
+            (fresh_token, now - 60, "e2e-family-fresh"),
+        ):
+            connection.execute(
+                "INSERT OR REPLACE INTO refresh_tokens "
+                "(token_hash, family_id, user_id, client_id, scope, auth_time, amr, acr, issued_at, expires_at) "
+                "VALUES (?, ?, ?, 'demo-web', 'openid', ?, '[]', 'urn:kagi:acr:passkey', ?, ?)",
+                (
+                    hashlib.sha256(token.encode()).hexdigest(),
+                    family,
+                    rt_user,
+                    auth_time,
+                    now,
+                    now + 3600,
+                ),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+    r = requests.post(
+        BASE + "/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": expired_token,
+            "client_id": "demo-web",
+        },
+        timeout=10,
+    )
+    check(
+        "refresh token past the absolute lifetime is rejected",
+        r.status_code == 400 and r.json().get("error") == "invalid_grant",
+        (r.status_code, r.text[:300]),
+    )
+
+    r = requests.post(
+        BASE + "/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": fresh_token,
+            "client_id": "demo-web",
+        },
+        timeout=10,
+    )
+    payload = r.json() if r.status_code == 200 else {}
+    check("refresh within the absolute lifetime succeeds", r.status_code == 200, (r.status_code, payload))
+    rotated = payload.get("refresh_token")
+    if rotated:
+        connection = sqlite3.connect(DB, timeout=10)
+        try:
+            row = connection.execute(
+                "SELECT auth_time, expires_at FROM refresh_tokens WHERE token_hash = ?",
+                (hashlib.sha256(rotated.encode()).hexdigest(),),
+            ).fetchone()
+        finally:
+            connection.close()
+        check(
+            "rotated refresh tokens cannot pass the absolute cap",
+            row is not None and row[1] <= row[0] + 30 * 86400 + 5,
+            row,
+        )
+    else:
+        check("rotated refresh tokens cannot pass the absolute cap", False, payload)
+else:
+    print("SKIP absolute refresh-token lifetime (KAGI_DB is not a local SQLite file)")
+
+# ---------------- client secret rotation ----------------
+if DB and os.path.exists(DB):
+    now = int(time.time())
+    client_id = "e2e-confidential"
+    original_secret = secrets.token_urlsafe(24)
+    wrong_secret = secrets.token_urlsafe(24)
+    connection = sqlite3.connect(DB, timeout=10)
+    try:
+        connection.execute(
+            "INSERT OR REPLACE INTO clients "
+            "(id, name, secret_hash, redirect_uris, grant_types, scopes, auth_method, created_at) "
+            "VALUES (?, ?, ?, '[]', '[\"client_credentials\"]', '[\"openid\"]', "
+            "'client_secret_post', ?)",
+            (
+                client_id,
+                "E2E Confidential",
+                hashlib.sha256(original_secret.encode()).hexdigest(),
+                now,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    r = requests.post(BASE + f"/admin/clients/{client_id}/rotate-secret", timeout=10)
+    check(
+        "secret rotation rejects an anonymous request",
+        r.status_code == 401,
+        (r.status_code, r.text[:200]),
+    )
+
+    r = requests.post(
+        BASE + "/admin/clients/no-such-client/rotate-secret", headers=admin, timeout=10
+    )
+    check(
+        "secret rotation reports an unknown client",
+        r.status_code == 404,
+        (r.status_code, r.text[:200]),
+    )
+
+    r = requests.post(
+        BASE + "/admin/clients/demo-web/rotate-secret", headers=admin, timeout=10
+    )
+    check(
+        "secret rotation refuses a public client",
+        r.status_code == 400 and r.json().get("error") == "public_client",
+        (r.status_code, r.text[:200]),
+    )
+
+    r = requests.post(
+        BASE + f"/admin/clients/{client_id}/rotate-secret", headers=admin, timeout=10
+    )
+    payload = r.json() if r.status_code == 200 else {}
+    new_secret = payload.get("client_secret", "")
+    check(
+        "secret rotation returns a new secret",
+        r.status_code == 200 and len(new_secret) >= 32 and new_secret != original_secret,
+        (r.status_code, payload),
+    )
+    check(
+        "secret rotation does not cache the response",
+        r.headers.get("Cache-Control") == "no-store",
+        dict(r.headers),
+    )
+
+    def introspect(secret):
+        return requests.post(
+            BASE + "/introspect",
+            data={"token": "unknown", "client_id": client_id, "client_secret": secret},
+            timeout=10,
+        )
+
+    check("the new secret authenticates", introspect(new_secret).status_code == 200)
+    check("the previous secret works during the grace period", introspect(original_secret).status_code == 200)
+    check("an unrelated secret is rejected", introspect(wrong_secret).status_code == 401)
+
+    connection = sqlite3.connect(DB, timeout=10)
+    try:
+        connection.execute(
+            "UPDATE clients SET previous_secret_expires_at = ? WHERE id = ?",
+            (now - 1, client_id),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    check(
+        "the previous secret stops working after the grace period",
+        introspect(original_secret).status_code == 401,
+    )
+    check("the new secret still works", introspect(new_secret).status_code == 200)
+
+    r = requests.get(BASE + "/admin/audit?limit=1000", headers=admin, timeout=10)
+    events = r.json().get("events", []) if r.status_code == 200 else []
+    check(
+        "secret rotation is written to the audit chain",
+        any(event.get("kind") == "admin.client_secret_rotate" for event in events),
+        [event.get("kind") for event in events[-5:]],
+    )
+else:
+    print("SKIP client secret rotation (KAGI_DB is not a local SQLite file)")
 
 # ---------------- tamper detection (SQLite only) ----------------
 if DB and os.path.exists(DB):
