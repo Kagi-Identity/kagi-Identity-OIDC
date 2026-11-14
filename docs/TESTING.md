@@ -77,7 +77,7 @@ On Windows, use PowerShell to set environment variables before invoking each com
 | `e2e_complete_oidc.py` | RFC 8628 device authorization/approval/denial/polling, `claims` validation and token filtering, RFC 7592 client management and secret rotation, signed back-channel logout delivery |
 | `e2e_security_races.py` | Concurrent authorization-code exchange, concurrent DPoP proof replay, key rotation/JWKS overlap, OIDC discovery sanity checks |
 | `e2e_rate_limit.py` | Shared fixed-window rate-limit enforcement and HTTP 429 behavior |
-| `e2e_security_ops.py` | Audit chain listing/verification/export, SQLite tamper detection, `/metrics`, DPoP nonce rejection and retry |
+| `e2e_security_ops.py` | Audit chain listing/verification/export, SQLite tamper detection, `/metrics`, DPoP nonce rejection and retry, user inspection/revocation, refresh-token absolute lifetime and client-secret rotation |
 
 The security-race script checks that exactly one concurrent authorization-code exchange succeeds and that a shared DPoP proof is accepted only once. It also checks a focused set of discovery metadata invariants. These are regression tests, not a complete normative test suite.
 

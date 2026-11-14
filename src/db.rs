@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS clients (
     id                    TEXT PRIMARY KEY,
     name                  TEXT NOT NULL,
     secret_hash           TEXT,
+    previous_secret_hash  TEXT,
+    previous_secret_expires_at INTEGER,
     redirect_uris         TEXT NOT NULL,
     post_logout_redirect_uris TEXT NOT NULL DEFAULT '[]',
     grant_types           TEXT NOT NULL,
@@ -991,6 +993,8 @@ impl Db {
             ("sessions", "ip", "TEXT"),
             ("access_tokens", "session_id", "TEXT"),
             ("clients", "registration_token_hash", "TEXT"),
+            ("clients", "previous_secret_hash", "TEXT"),
+            ("clients", "previous_secret_expires_at", "INTEGER"),
             ("clients", "backchannel_logout_uri", "TEXT"),
             (
                 "clients",
@@ -1318,6 +1322,10 @@ pub struct Client {
     pub id: String,
     pub name: String,
     pub secret_hash: Option<String>,
+    /// Grace-period secret kept after an administrative rotation. It is only
+    /// accepted until `previous_secret_expires_at`.
+    pub previous_secret_hash: Option<String>,
+    pub previous_secret_expires_at: Option<i64>,
     pub redirect_uris: Vec<String>,
     pub post_logout_redirect_uris: Vec<String>,
     pub grant_types: Vec<String>,
@@ -1443,6 +1451,8 @@ fn map_client(row: &Row) -> Result<Client> {
         id: row.get("id")?,
         name: row.get("name")?,
         secret_hash: row.get("secret_hash")?,
+        previous_secret_hash: row.get("previous_secret_hash")?,
+        previous_secret_expires_at: row.get("previous_secret_expires_at")?,
         redirect_uris: json_strings(&row.get::<_, String>("redirect_uris")?),
         post_logout_redirect_uris: json_strings(
             &row.get::<_, String>("post_logout_redirect_uris")?,
@@ -1528,6 +1538,29 @@ pub fn load_client(c: &Connection, id: &str) -> anyhow::Result<Option<Client>> {
         map_client,
     )
     .optional()?)
+}
+
+/// Replace a confidential client's secret, moving the old hash into the
+/// grace slot. The compare-and-swap on `secret_hash` makes concurrent
+/// rotations deterministic: only one caller can replace the loaded hash.
+/// Returns `false` when the client is missing, has no secret, or someone else
+/// rotated it first.
+pub fn rotate_client_secret(
+    c: &Connection,
+    client_id: &str,
+    current_hash: &str,
+    new_hash: &str,
+    grace_expires_at: i64,
+) -> anyhow::Result<bool> {
+    let changed = c.execute(
+        "UPDATE clients
+         SET previous_secret_hash = secret_hash,
+             previous_secret_expires_at = ?1,
+             secret_hash = ?2
+         WHERE id = ?3 AND secret_hash = ?4",
+        params![grace_expires_at, new_hash, client_id, current_hash],
+    )?;
+    Ok(changed == 1)
 }
 
 /// Clients that hold a token for this user (optionally for one browser
@@ -2286,6 +2319,8 @@ mod schema_regression_tests {
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS session_id"));
         assert!(schema.contains("CREATE TABLE IF NOT EXISTS audit_events"));
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS seq BIGINT"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS previous_secret_hash"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS previous_secret_expires_at"));
         assert!(schema.contains("CREATE TABLE IF NOT EXISTS audit_head"));
         assert!(schema.contains("CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_seq"));
         assert!(schema.contains("CREATE TABLE IF NOT EXISTS recovery_codes"));
@@ -2445,6 +2480,21 @@ mod schema_regression_tests {
         assert_eq!(verification.checked, 2);
     }
 
+    fn seed_client(db: &super::Db, id: &str, secret_hash: Option<&str>) {
+        let now = crate::util::now();
+        db.with(|c| {
+            c.execute(
+                "INSERT INTO clients
+                     (id, name, secret_hash, redirect_uris, grant_types, scopes, auth_method, created_at)
+                 VALUES (?1, ?1, ?2, '[]', '[\"authorization_code\"]', '[\"openid\"]',
+                         'client_secret_basic', ?3)",
+                super::params![id, secret_hash, now],
+            )?;
+            Ok(())
+        })
+        .expect("seed client");
+    }
+
     fn seed_shared_user(db: &super::Db) {
         let now = crate::util::now();
         db.with(|c| {
@@ -2561,6 +2611,44 @@ mod schema_regression_tests {
         // Historical signals survive revocation so the operator can still see
         // when the account was last active.
         assert_eq!(after.last_token_issued_at, overview.last_token_issued_at);
+    }
+
+    #[test]
+    fn secret_rotation_moves_the_old_hash_into_the_grace_slot() {
+        let db = audit_db();
+        let old_hash = crate::util::random_token(16);
+        let new_hash = crate::util::random_token(16);
+        seed_client(&db, "c1", Some(old_hash.as_str()));
+        let expires = crate::util::now() + 60;
+
+        let rotated = db
+            .with(|c| super::rotate_client_secret(c, "c1", &old_hash, &new_hash, expires))
+            .expect("rotate");
+        assert!(rotated);
+
+        let client = db
+            .with(|c| super::load_client(c, "c1"))
+            .expect("load client")
+            .expect("client exists");
+        assert_eq!(client.secret_hash.as_deref(), Some(new_hash.as_str()));
+        assert_eq!(
+            client.previous_secret_hash.as_deref(),
+            Some(old_hash.as_str())
+        );
+        assert_eq!(client.previous_secret_expires_at, Some(expires));
+
+        // A concurrent rotation that still holds the old hash loses the CAS.
+        let stale = db
+            .with(|c| super::rotate_client_secret(c, "c1", &old_hash, "third", expires))
+            .expect("stale rotate");
+        assert!(!stale);
+
+        // Public clients have no secret to rotate.
+        seed_client(&db, "public", None);
+        let public = db
+            .with(|c| super::rotate_client_secret(c, "public", "", "x", expires))
+            .expect("public rotate");
+        assert!(!public);
     }
 
     #[test]

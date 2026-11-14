@@ -1513,6 +1513,77 @@ pub async fn admin_user(
 }
 
 // ---------------------------------------------------------------------------
+// Client secret rotation
+// ---------------------------------------------------------------------------
+
+/// Rotate a confidential client's secret. The previous secret keeps working
+/// for `KAGI_CLIENT_SECRET_GRACE` seconds so that an operator can deploy the
+/// new value without dropping in-flight token requests. Public clients have no
+/// secret to rotate and are rejected.
+pub async fn admin_client_rotate_secret(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(client_id): Path<String>,
+) -> Response {
+    if let Some(response) = admin_gate(&st, &headers) {
+        return response;
+    }
+    let client = match st.db.with(|c| db::load_client(c, &client_id)) {
+        Ok(Some(client)) => client,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "not_found" }))).into_response()
+        }
+        Err(error) => return admin_db_error(error),
+    };
+    let Some(current_hash) = client.secret_hash.clone() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "public_client" })),
+        )
+            .into_response();
+    };
+    let secret = random_token(32);
+    let new_hash = sha256_hex(&secret);
+    let expires_at = now().saturating_add(st.cfg.client_secret_grace);
+    match st
+        .db
+        .with(|c| db::rotate_client_secret(c, &client.id, &current_hash, &new_hash, expires_at))
+    {
+        Ok(true) => {
+            crate::auth::audit(
+                &st,
+                None,
+                "admin.client_secret_rotate",
+                &format!(
+                    "管理 API によるクライアントシークレットのローテーション: client={} grace_seconds={}",
+                    client.id, st.cfg.client_secret_grace
+                ),
+                &headers,
+            );
+            let mut res = Json(json!({
+                "ok": true,
+                "client_id": client.id,
+                "client_secret": secret,
+                "previous_secret_expires_at": expires_at,
+                "grace_seconds": st.cfg.client_secret_grace,
+            }))
+            .into_response();
+            res.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            res
+        }
+        // A concurrent rotation replaced the hash first. Refuse rather than
+        // return a secret that is already stale.
+        Ok(false) => (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "secret_already_rotated" })),
+        )
+            .into_response(),
+        Err(error) => admin_db_error(error),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
 

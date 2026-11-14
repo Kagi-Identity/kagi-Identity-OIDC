@@ -29,7 +29,7 @@
 | `KAGI_REQUIRE_DPOP` | `0` | 対象フローで DPoP を必須にします。 |
 | `KAGI_DPOP_NONCE` | 本番では `1` | サーバー発行の DPoP nonce（`DPoP-Nonce`）をすべての証明に要求します（RFC 9449 §8）。 |
 | `KAGI_DPOP_NONCE_SECRET` | 未設定（本番以外は起動ごとにランダム） | nonce をステートレスに署名する HMAC 秘密鍵。本番では 32 文字以上が必須で、全インスタンスで共有します。 |
-| `KAGI_ADMIN_TOKEN` | 未設定 | `/admin/stats`、`/metrics`、`/admin/audit*`、`/admin/users/{id}/revoke`、`/admin/keys/rotate` を保護する Bearer トークン。未設定時は無効化されます。 |
+| `KAGI_ADMIN_TOKEN` | 未設定 | `/admin/stats`、`/metrics`、`/admin/audit*`、`/admin/users/*`、`/admin/clients/{id}/rotate-secret`、`/admin/keys/rotate` を保護する Bearer トークン。未設定時は無効化されます。 |
 | `KAGI_REGISTRATION_TOKEN` | 未設定 | 動的クライアント登録に必要な initial access token。未設定時は登録を拒否します。 |
 | `KAGI_CORS_ORIGINS` | 未設定 | API 呼び出しを許可する HTTPS オリジンのカンマ区切りリスト。ワイルドカードは拒否されます。 |
 | `KAGI_COOKIE_SECURE` | HTTPS Issuer から導出 | Cookie に `Secure` を付与します。HTTPS では `__Host-kagi_sid`、HTTP では `kagi_sid` を使います。 |
@@ -52,6 +52,7 @@
 | `KAGI_ACCESS_TTL` | `300` | アクセストークンの有効期限（5 分）。 |
 | `KAGI_REFRESH_TTL` | `2592000` | リフレッシュトークンの有効期限（30 日）。 |
 | `KAGI_REFRESH_MAX_TTL` | `2592000` | 最初のサインインから数えたリフレッシュトークン系列の絶対有効期限（30 日）。ローテーションで延長できません。`KAGI_REFRESH_TTL` 以上である必要があります。 |
+| `KAGI_CLIENT_SECRET_GRACE` | `86400` | クライアントシークレットのローテーション後、旧シークレットを受理する秒数（`0` で猶予なし）。 |
 | `KAGI_ID_TTL` | `300` | ID トークンの有効期限（5 分）。 |
 | `KAGI_PAR_TTL` | `90` | PAR の `request_uri` の有効期限。 |
 | `KAGI_DEVICE_TTL` | `600` | RFC 8628 デバイスコードの有効期限。 |

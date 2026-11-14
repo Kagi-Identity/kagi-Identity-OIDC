@@ -252,6 +252,10 @@ fn routes_and_security(state: AppState) -> Router {
         .route("/admin/audit/export", get(resource::admin_audit_export))
         .route("/admin/users/{user_id}/revoke", post(resource::admin_user_revoke))
         .route("/admin/users/{user_id}", get(resource::admin_user))
+        .route(
+            "/admin/clients/{client_id}/rotate-secret",
+            post(resource::admin_client_rotate_secret),
+        )
         .route("/metrics", get(resource::metrics))
         .route("/healthz", get(resource::health))
         .route("/readyz", get(resource::health))
@@ -763,6 +767,7 @@ mod production_config_tests {
             access_ttl: 300,
             refresh_ttl: 2_592_000,
             refresh_max_ttl: 7_776_000,
+            client_secret_grace: 86_400,
             id_ttl: 300,
             par_ttl: 90,
             device_ttl: 600,

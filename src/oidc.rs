@@ -1845,13 +1845,29 @@ fn load_client_required(st: &AppState, id: &str) -> ApiResult<Client> {
 }
 
 fn verify_secret(client: &Client, secret: &str) -> ApiResult<()> {
-    let Some(expected) = client.secret_hash.as_deref() else {
-        return Err(OauthError::invalid_client("client has no secret"));
-    };
-    if !ct_eq(&sha256_hex(secret), expected) {
-        return Err(OauthError::invalid_client("invalid client secret"));
+    let presented = sha256_hex(secret);
+    let mut matched = false;
+    if let Some(expected) = client.secret_hash.as_deref() {
+        matched |= ct_eq(&presented, expected);
     }
-    Ok(())
+    // A rotated client may keep using the previous secret briefly so that a
+    // rollout can update configuration without an outage. The deadline is
+    // stored server-side and cannot be extended by the client.
+    if let (Some(previous), Some(expires_at)) = (
+        client.previous_secret_hash.as_deref(),
+        client.previous_secret_expires_at,
+    ) {
+        if now() <= expires_at {
+            matched |= ct_eq(&presented, previous);
+        }
+    }
+    if matched {
+        return Ok(());
+    }
+    if client.secret_hash.is_none() {
+        return Err(OauthError::invalid_client("client has no secret"));
+    }
+    Err(OauthError::invalid_client("invalid client secret"))
 }
 
 fn verify_client_assertion(st: &AppState, client: &Client, assertion: &str) -> ApiResult<()> {
@@ -2031,6 +2047,8 @@ mod claims_tests {
             id: "client-1".to_string(),
             name: "test".to_string(),
             secret_hash: None,
+            previous_secret_hash: None,
+            previous_secret_expires_at: None,
             redirect_uris: vec![],
             post_logout_redirect_uris: vec![],
             grant_types: vec!["authorization_code".to_string()],
@@ -2074,5 +2092,61 @@ mod claims_tests {
             ip: None,
         };
         assert!(!acr_satisfied(&params, &session));
+    }
+}
+
+#[cfg(test)]
+mod secret_tests {
+    use super::*;
+    use crate::db::Client;
+
+    fn client(current: &str, previous: Option<(&str, i64)>) -> Client {
+        Client {
+            id: "client-1".to_string(),
+            name: "test".to_string(),
+            secret_hash: Some(sha256_hex(current)),
+            previous_secret_hash: previous.map(|(secret, _)| sha256_hex(secret)),
+            previous_secret_expires_at: previous.map(|(_, expires)| expires),
+            redirect_uris: vec![],
+            post_logout_redirect_uris: vec![],
+            grant_types: vec![],
+            scopes: vec![],
+            auth_method: "client_secret_basic".to_string(),
+            jwks: None,
+            require_dpop: false,
+            require_par: false,
+            id_token_alg: "ES256".to_string(),
+            registration_token_hash: None,
+            backchannel_logout_uri: None,
+            backchannel_logout_session_required: false,
+        }
+    }
+
+    #[test]
+    fn accepts_the_current_and_the_previous_secret_within_grace() {
+        let current = random_token(16);
+        let previous = random_token(16);
+        let other = random_token(16);
+        let client = client(&current, Some((&previous, now() + 60)));
+        assert!(verify_secret(&client, &current).is_ok());
+        assert!(verify_secret(&client, &previous).is_ok());
+        assert!(verify_secret(&client, &other).is_err());
+    }
+
+    #[test]
+    fn rejects_the_previous_secret_after_the_grace_deadline() {
+        let current = random_token(16);
+        let previous = random_token(16);
+        let client = client(&current, Some((&previous, now() - 1)));
+        assert!(verify_secret(&client, &previous).is_err());
+        assert!(verify_secret(&client, &current).is_ok());
+    }
+
+    #[test]
+    fn public_clients_have_no_secret() {
+        let current = random_token(16);
+        let mut client = client(&current, None);
+        client.secret_hash = None;
+        assert!(verify_secret(&client, &current).is_err());
     }
 }

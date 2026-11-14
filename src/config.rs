@@ -62,6 +62,9 @@ pub struct Config {
     /// the original authentication. Rotation cannot extend past this bound, so
     /// a stolen refresh token cannot be kept alive indefinitely.
     pub refresh_max_ttl: i64,
+    /// How long a previous client secret stays acceptable after an
+    /// administrative rotation (0 disables the grace period).
+    pub client_secret_grace: i64,
     /// ID token lifetime in seconds.
     pub id_ttl: i64,
     /// PAR request_uri lifetime in seconds (RFC 9126 recommends <= 600).
@@ -203,6 +206,7 @@ impl Config {
         let access_ttl = num("KAGI_ACCESS_TTL", 300);
         let refresh_ttl = num("KAGI_REFRESH_TTL", 30 * 24 * 3600);
         let refresh_max_ttl = num("KAGI_REFRESH_MAX_TTL", 30 * 24 * 3600);
+        let client_secret_grace = num("KAGI_CLIENT_SECRET_GRACE", 24 * 3600).max(0);
         let id_ttl = num("KAGI_ID_TTL", 300);
         let par_ttl = num("KAGI_PAR_TTL", 90);
         let device_ttl = num("KAGI_DEVICE_TTL", 600);
@@ -291,6 +295,7 @@ impl Config {
             access_ttl,
             refresh_ttl,
             refresh_max_ttl,
+            client_secret_grace,
             id_ttl,
             par_ttl,
             device_ttl,
@@ -442,6 +447,7 @@ mod origin_tests {
                 access_ttl: 300,
                 refresh_ttl: 3600,
                 refresh_max_ttl: 86_400,
+                client_secret_grace: 3600,
                 id_ttl: 300,
                 par_ttl: 90,
                 device_ttl: 600,
