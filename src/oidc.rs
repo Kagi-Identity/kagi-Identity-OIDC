@@ -486,7 +486,7 @@ fn authorize_inner(st: &AppState, headers: &HeaderMap, query: HashMap<String, St
     let prompt = params.prompt_set();
 
     let max_age_exceeded = match (&session, params.max_age) {
-        (Some(s), Some(max)) => s.auth_time + max < now(),
+        (Some(s), Some(max)) => s.auth_time.saturating_add(max) < now(),
         _ => false,
     };
     let acr_missing = match &session {
