@@ -86,6 +86,18 @@ fn typ_ok(header: &Value, expected: &str) -> bool {
 /// Verify a compact JWS against an embedded/public JWK.
 pub fn verify_with_jwk(jwk: &Value, token: &str, expected_typ: Option<&str>) -> anyhow::Result<(Value, Value)> {
     let (header, claims, input, sig) = decode_segments(token)?;
+    // We implement no JOSE extensions, so a `crit` header can never be
+    // satisfied. Rejecting it avoids "understood by neither party" ambiguity.
+    if header.get("crit").is_some() {
+        bail!("JWS crit header is not supported");
+    }
+    // RFC 7797 unencoded payloads are not used anywhere in kagi. Only the
+    // default (b64=true) encoding is accepted.
+    if let Some(b64) = header.get("b64") {
+        if b64.as_bool() != Some(true) {
+            bail!("unencoded JWS payloads are not supported");
+        }
+    }
     let alg = header
         .get("alg")
         .and_then(Value::as_str)
@@ -244,5 +256,50 @@ mod tests {
         let b = thumbprint(&key.public_jwk()).unwrap();
         assert_eq!(a, b);
         assert_eq!(a.len(), 43);
+    }
+
+    fn sign_with_header(key: &SigKey, header: Value, claims: &Value) -> String {
+        let h = b64(&serde_json::to_vec(&header).unwrap());
+        let p = b64(&serde_json::to_vec(claims).unwrap());
+        let input = format!("{h}.{p}");
+        let sig: p256::ecdsa::Signature =
+            p256::ecdsa::signature::Signer::sign(&key.key, input.as_bytes());
+        format!("{input}.{}", b64(&sig.to_bytes()[..]))
+    }
+
+    #[test]
+    fn rejects_crit_header() {
+        let sk = crate::util::random_p256_signing_key();
+        let key = SigKey { kid: "k1".into(), key: sk };
+        let token = sign_with_header(
+            &key,
+            json!({"alg": "ES256", "crit": ["exp"], "exp": 1}),
+            &json!({"sub": "alice"}),
+        );
+        assert!(verify_with_jwk(&key.public_jwk(), &token, None).is_err());
+    }
+
+    #[test]
+    fn rejects_unencoded_payload_header() {
+        let sk = crate::util::random_p256_signing_key();
+        let key = SigKey { kid: "k1".into(), key: sk };
+        let token = sign_with_header(
+            &key,
+            json!({"alg": "ES256", "b64": false}),
+            &json!({"sub": "alice"}),
+        );
+        assert!(verify_with_jwk(&key.public_jwk(), &token, None).is_err());
+    }
+
+    #[test]
+    fn accepts_explicit_default_encoding() {
+        let sk = crate::util::random_p256_signing_key();
+        let key = SigKey { kid: "k1".into(), key: sk };
+        let token = sign_with_header(
+            &key,
+            json!({"alg": "ES256", "b64": true}),
+            &json!({"sub": "alice"}),
+        );
+        assert!(verify_with_jwk(&key.public_jwk(), &token, None).is_ok());
     }
 }

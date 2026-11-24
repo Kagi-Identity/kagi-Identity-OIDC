@@ -335,6 +335,14 @@ check("management update", s == 200 and updated.get("client_name") == "e2e-manag
       and updated.get("backchannel_logout_uri") == "https://rp.example/logout"
       and updated.get("backchannel_logout_session_required") is True, (s, updated))
 
+# RFC 7592 §2.2: members omitted from a PUT keep their current value.
+s, h, b = req3("PUT", mgmt_path, json.dumps({"client_name": "e2e-management-updated"}), auth)
+partial = json.loads(b)
+check("management update keeps omitted fields", s == 200
+      and partial.get("redirect_uris") == ["http://localhost:9999/cb2"]
+      and partial.get("backchannel_logout_uri") == "https://rp.example/logout"
+      and partial.get("backchannel_logout_session_required") is True, (s, partial))
+
 s, h, b = req3("PUT", mgmt_path, json.dumps({"redirect_uris": ["http://evil.example/cb"]}), auth)
 check("management update rejects unsafe redirect", s == 400, (s, b))
 s, h, b = req3("PUT", mgmt_path, json.dumps({"redirect_uris": ["https://rp.example/cb"],

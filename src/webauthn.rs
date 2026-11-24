@@ -148,6 +148,10 @@ pub fn verify_registration(
     if ad.flags & FLAG_AT == 0 {
         bail!("attested credential data is missing");
     }
+    validate_backup_flags(ad.flags)?;
+    // WebAuthn L2 §7.1 step 10: the credential id in `authData` is authoritative
+    // and must agree with the `id`/`rawId` the client echoes back.
+    validate_response_credential_id(response, &ad.credential_id)?;
 
     let cose = ad.cose_key_bytes().to_vec();
     let key = CoseKey::parse(&cose)?;
@@ -184,6 +188,46 @@ pub fn verify_registration(
         backup_eligible: ad.flags & FLAG_BE != 0,
         backup_state: ad.flags & FLAG_BS != 0,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Registration invariants
+// ---------------------------------------------------------------------------
+
+/// WebAuthn credential ids are 16..=1023 bytes (L2 §6.5.1). Bounding the length
+/// keeps pathological ids out of the database and the `excludeCredentials` list.
+fn validate_credential_id_len(len: usize) -> anyhow::Result<()> {
+    if !(16..=1023).contains(&len) {
+        bail!("credential id must be 16..=1023 bytes");
+    }
+    Ok(())
+}
+
+/// `BS` (backup state) may only be asserted by a credential that is `BE`
+/// (backup eligible). An authenticator that violates this is misbehaving.
+fn validate_backup_flags(flags: u8) -> anyhow::Result<()> {
+    if flags & FLAG_BS != 0 && flags & FLAG_BE == 0 {
+        bail!("backup state set without backup eligibility");
+    }
+    Ok(())
+}
+
+/// The credential id in `authData` is authoritative; the client-echoed
+/// `id`/`rawId` must decode to exactly the same bytes.
+fn validate_response_credential_id(response: &Value, expected: &[u8]) -> anyhow::Result<()> {
+    let mut seen = false;
+    for field in ["id", "rawId"] {
+        if let Some(value) = response.get(field).and_then(Value::as_str) {
+            seen = true;
+            if b64d(value)? != expected {
+                bail!("{field} does not match the attested credential id");
+            }
+        }
+    }
+    if !seen {
+        bail!("credential id is missing from the response");
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -352,6 +396,7 @@ impl AuthData {
             }
             out.aaguid.copy_from_slice(&bytes[37..53]);
             let cred_len = u16::from_be_bytes([bytes[53], bytes[54]]) as usize;
+            validate_credential_id_len(cred_len)?;
             let start = 55usize;
             let end = start
                 .checked_add(cred_len)
@@ -625,6 +670,11 @@ mod cbor {
     use super::Cbor;
     use anyhow::{anyhow, bail, Result};
 
+    /// Maximum nesting depth for arrays/maps/tags. WebAuthn structures are only
+    /// a handful of levels deep, so a tight bound rejects stack-exhaustion
+    /// inputs long before the recursive descent can run out of stack.
+    const MAX_DEPTH: usize = 16;
+
     pub fn decode(bytes: &[u8]) -> Result<Cbor> {
         let (value, used) = decode_one(bytes)?;
         if used != bytes.len() {
@@ -634,7 +684,11 @@ mod cbor {
     }
 
     pub fn decode_one(bytes: &[u8]) -> Result<(Cbor, usize)> {
-        let mut d = Decoder { b: bytes, pos: 0 };
+        let mut d = Decoder {
+            b: bytes,
+            pos: 0,
+            depth: 0,
+        };
         let v = d.value()?;
         Ok((v, d.pos))
     }
@@ -642,6 +696,7 @@ mod cbor {
     struct Decoder<'a> {
         b: &'a [u8],
         pos: usize,
+        depth: usize,
     }
 
     impl<'a> Decoder<'a> {
@@ -686,6 +741,16 @@ mod cbor {
         }
 
         fn value(&mut self) -> Result<Cbor> {
+            if self.depth >= MAX_DEPTH {
+                bail!("CBOR nesting is too deep");
+            }
+            self.depth += 1;
+            let out = self.value_inner();
+            self.depth -= 1;
+            out
+        }
+
+        fn value_inner(&mut self) -> Result<Cbor> {
             let initial = self.byte()?;
             let major = initial >> 5;
             let ai = initial & 0x1f;
@@ -777,5 +842,52 @@ mod tests {
         assert_eq!(v.map_int(3), Some(-7));
         assert_eq!(v.map_int(-1), Some(1));
         assert_eq!(v.map_bytes(-2).unwrap().len(), 32);
+    }
+
+    #[test]
+    fn cbor_rejects_deeply_nested_values() {
+        // 64 nested single-element arrays would otherwise recurse 64 levels.
+        let mut deep = vec![0x81u8; 64];
+        deep.push(0x00);
+        assert!(cbor::decode(&deep).is_err());
+
+        // A realistic shallow nesting still parses.
+        let shallow = vec![0x81, 0x81, 0x81, 0x00];
+        let v = cbor::decode(&shallow).unwrap();
+        assert_eq!(
+            v,
+            Cbor::Array(vec![Cbor::Array(vec![Cbor::Array(vec![Cbor::Uint(0)])])])
+        );
+    }
+
+    #[test]
+    fn credential_id_length_is_bounded() {
+        assert!(validate_credential_id_len(16).is_ok());
+        assert!(validate_credential_id_len(1023).is_ok());
+        assert!(validate_credential_id_len(15).is_err());
+        assert!(validate_credential_id_len(0).is_err());
+        assert!(validate_credential_id_len(1024).is_err());
+    }
+
+    #[test]
+    fn backup_state_requires_backup_eligibility() {
+        assert!(validate_backup_flags(FLAG_BE | FLAG_BS).is_ok());
+        assert!(validate_backup_flags(FLAG_BE).is_ok());
+        assert!(validate_backup_flags(0).is_ok());
+        assert!(validate_backup_flags(FLAG_BS).is_err());
+    }
+
+    #[test]
+    fn response_credential_id_must_match_attested_id() {
+        let id = vec![0xABu8; 32];
+        let encoded = b64(&id);
+        let ok = json!({ "id": encoded, "rawId": encoded });
+        assert!(validate_response_credential_id(&ok, &id).is_ok());
+
+        let wrong = json!({ "id": b64(&[0u8; 32]), "rawId": b64(&[0u8; 32]) });
+        assert!(validate_response_credential_id(&wrong, &id).is_err());
+
+        let missing = json!({});
+        assert!(validate_response_credential_id(&missing, &id).is_err());
     }
 }

@@ -418,6 +418,8 @@ async fn harden(State(st): State<AppState>, mut req: Request, next: Next) -> Res
             "/metrics" => Some(("metrics", 120)),
             p if p.starts_with("/admin/") => Some(("admin", 30)),
             "/login" | "/signup" | "/recover" => Some(("auth-page", 60)),
+            "/consent" => Some(("auth-consent", 30)),
+            "/logout" => Some(("auth-logout", 30)),
             _ => None,
         };
         if let Some((bucket, limit)) = policy {

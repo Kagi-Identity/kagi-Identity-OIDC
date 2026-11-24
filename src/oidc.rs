@@ -486,7 +486,7 @@ fn authorize_inner(st: &AppState, headers: &HeaderMap, query: HashMap<String, St
     let prompt = params.prompt_set();
 
     let max_age_exceeded = match (&session, params.max_age) {
-        (Some(s), Some(max)) => s.auth_time + max < now(),
+        (Some(s), Some(max)) => s.auth_time.saturating_add(max) < now(),
         _ => false,
     };
     let acr_missing = match &session {
@@ -1905,22 +1905,41 @@ fn verify_client_assertion(st: &AppState, client: &Client, assertion: &str) -> A
         .get("exp")
         .and_then(Value::as_i64)
         .ok_or_else(|| OauthError::invalid_client("assertion has no exp"))?;
-    if exp < now() {
+    let iat = claims
+        .get("iat")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| OauthError::invalid_client("assertion has no iat"))?;
+    let now = now();
+    if exp < now {
         return Err(OauthError::invalid_client("assertion expired"));
     }
-    if let Some(iat) = claims.get("iat").and_then(Value::as_i64) {
-        if (now() - iat).abs() > 300 {
-            return Err(OauthError::invalid_client("assertion iat is out of range"));
-        }
+    // A client assertion is a one-shot credential. Cap its lifetime so a
+    // leaked assertion cannot be replayed for hours and the accepted clock
+    // skew stays small.
+    if exp > now.saturating_add(300) {
+        return Err(OauthError::invalid_client(
+            "assertion lifetime is too long",
+        ));
+    }
+    if now.saturating_sub(iat).abs() > 300 {
+        return Err(OauthError::invalid_client("assertion iat is out of range"));
+    }
+    if exp <= iat {
+        return Err(OauthError::invalid_client(
+            "assertion exp must be after iat",
+        ));
     }
     let jti = claims
         .get("jti")
         .and_then(Value::as_str)
         .ok_or_else(|| OauthError::invalid_client("assertion has no jti"))?;
+    if !(8..=200).contains(&jti.len()) || jti.chars().any(char::is_control) {
+        return Err(OauthError::invalid_client("assertion jti is invalid"));
+    }
     let inserted = st.db.with(|c| {
         Ok(c.execute(
             "INSERT OR IGNORE INTO assertion_replay (jti, expires_at) VALUES (?1, ?2)",
-            params![jti, exp.max(now()) + 60],
+            params![jti, exp.saturating_add(60)],
         )?)
     })?;
     if inserted == 0 {

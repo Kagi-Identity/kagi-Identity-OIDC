@@ -206,6 +206,19 @@ pub async fn verification_submit(
     if !csrf_ok {
         return bad_request("CSRF トークンが一致しません");
     }
+    // The approval flow is created for one authenticated user. Without this
+    // binding a second session that learns `rid` could approve or deny a grant
+    // that belongs to someone else.
+    if !flow_bound_to_session(flow.user_id.as_deref(), &session.user_id) {
+        crate::auth::audit(
+            &st,
+            Some(&session.user_id),
+            "device.binding_denied",
+            "別セッションのデバイス承認要求を拒否",
+            &headers,
+        );
+        return bad_request("この承認リクエストは現在のセッションに属していません");
+    }
     let decision = form.get("decision").map(String::as_str).unwrap_or("deny");
     if !matches!(decision, "allow" | "deny") {
         return bad_request("不正な操作です");
@@ -300,6 +313,11 @@ fn bad_request(message: &str) -> Response {
         Html(crate::ui::error_page("400", message)),
     )
         .into_response()
+}
+
+/// A device approval flow belongs to exactly one authenticated user.
+fn flow_bound_to_session(flow_user_id: Option<&str>, session_user_id: &str) -> bool {
+    flow_user_id == Some(session_user_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -453,7 +471,14 @@ pub fn exchange(
 
 #[cfg(test)]
 mod tests {
-    use super::{generate_user_code, normalize_user_code, user_code_hash};
+    use super::{flow_bound_to_session, generate_user_code, normalize_user_code, user_code_hash};
+
+    #[test]
+    fn device_flow_is_bound_to_its_session() {
+        assert!(flow_bound_to_session(Some("user-a"), "user-a"));
+        assert!(!flow_bound_to_session(Some("user-a"), "user-b"));
+        assert!(!flow_bound_to_session(None, "user-a"));
+    }
 
     #[test]
     fn user_codes_normalize_to_eight_alphanumerics() {
