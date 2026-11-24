@@ -517,6 +517,12 @@ fn validate_redirect_list(uris: &[String], field: &str) -> ApiResult<()> {
     if uris.is_empty() {
         return Err(OauthError::invalid_request(format!("{field} is required")));
     }
+    validate_optional_redirect_list(uris, field)
+}
+
+/// Validate a list that may legitimately be empty (for example
+/// `post_logout_redirect_uris`) while still bounding its size.
+fn validate_optional_redirect_list(uris: &[String], field: &str) -> ApiResult<()> {
     if uris.len() > 16 {
         return Err(OauthError::invalid_request(format!(
             "{field} must contain at most 16 entries"
@@ -648,17 +654,24 @@ fn update_client_inner(
 ) -> ApiResult<Response> {
     let existing = authenticate_registration_client(st, headers, client_id)?;
 
-    let redirect_uris = string_array(body, "redirect_uris");
-    validate_redirect_list(&redirect_uris, "redirect_uris")?;
+    // RFC 7592 §2.2: omitted members keep their current value.
+    let redirect_uris = match body.get("redirect_uris") {
+        Some(_) => {
+            let list = string_array(body, "redirect_uris");
+            validate_redirect_list(&list, "redirect_uris")?;
+            list
+        }
+        None => existing.redirect_uris.clone(),
+    };
 
-    let post_logout = string_array(body, "post_logout_redirect_uris");
-    for uri in &post_logout {
-        validate_redirect_uri(uri).map_err(|reason| {
-            OauthError::invalid_request(format!(
-                "post_logout_redirect_uri {uri} is invalid: {reason}"
-            ))
-        })?;
-    }
+    let post_logout = match body.get("post_logout_redirect_uris") {
+        Some(_) => {
+            let list = string_array(body, "post_logout_redirect_uris");
+            validate_optional_redirect_list(&list, "post_logout_redirect_uri")?;
+            list
+        }
+        None => existing.post_logout_redirect_uris.clone(),
+    };
 
     let auth_method = body
         .get("token_endpoint_auth_method")
@@ -680,7 +693,8 @@ fn update_client_inner(
                 .map_err(|reason| OauthError::invalid_request(format!("invalid jwks: {reason}")))?;
             Some(value.to_string())
         }
-        _ => None,
+        Some(_) => None,
+        None => existing.jwks.as_ref().map(|value| value.to_string()),
     };
     if auth_method == "private_key_jwt" && jwks.is_none() {
         return Err(OauthError::invalid_request(
@@ -725,9 +739,16 @@ fn update_client_inner(
     };
     validate_registerable_scopes(&scopes)?;
 
-    let name = validate_client_name(body)?;
-    let backchannel_logout_uri =
-        parse_optional_uri(body.get("backchannel_logout_uri"), "backchannel_logout_uri")?;
+    let name = if body.get("client_name").is_some() {
+        validate_client_name(body)?
+    } else {
+        existing.name.clone()
+    };
+    let backchannel_logout_uri = if body.get("backchannel_logout_uri").is_some() {
+        parse_optional_uri(body.get("backchannel_logout_uri"), "backchannel_logout_uri")?
+    } else {
+        existing.backchannel_logout_uri.clone()
+    };
     let backchannel_required = body
         .get("backchannel_logout_session_required")
         .and_then(Value::as_bool)
@@ -890,16 +911,7 @@ fn register_client_inner(st: &AppState, headers: &HeaderMap, body: &Value) -> Ap
                 .collect()
         })
         .unwrap_or_default();
-    if redirect_uris.is_empty() {
-        return Err(OauthError::invalid_request("redirect_uris is required"));
-    }
-    for uri in &redirect_uris {
-        if let Err(reason) = validate_redirect_uri(uri) {
-            return Err(OauthError::invalid_request(format!(
-                "redirect_uri {uri} is invalid: {reason}"
-            )));
-        }
-    }
+    validate_redirect_list(&redirect_uris, "redirect_uris")?;
 
     if body.get("jwks_uri").is_some() {
         return Err(OauthError::invalid_request(
@@ -1004,13 +1016,7 @@ fn register_client_inner(st: &AppState, headers: &HeaderMap, body: &Value) -> Ap
                 .collect()
         })
         .unwrap_or_default();
-    for uri in &post_logout {
-        if let Err(reason) = validate_redirect_uri(uri) {
-            return Err(OauthError::invalid_request(format!(
-                "post_logout_redirect_uri {uri} is invalid: {reason}"
-            )));
-        }
-    }
+    validate_optional_redirect_list(&post_logout, "post_logout_redirect_uri")?;
     let backchannel_logout_uri = parse_optional_uri(
         body.get("backchannel_logout_uri"),
         "backchannel_logout_uri",
@@ -1694,6 +1700,16 @@ mod tests {
         ));
         assert!(!audience_matches(&json!({ "aud": [] }), issuer));
         assert!(!audience_matches(&json!({}), issuer));
+    }
+
+    #[test]
+    fn redirect_lists_are_capped() {
+        let mut many: Vec<String> = (0..17)
+            .map(|i| format!("https://rp.example/cb{i}"))
+            .collect();
+        assert!(super::validate_optional_redirect_list(&many, "redirect_uris").is_err());
+        many.truncate(16);
+        assert!(super::validate_optional_redirect_list(&many, "redirect_uris").is_ok());
     }
 
     #[test]
