@@ -32,6 +32,15 @@ fn bearer_token(headers: &HeaderMap) -> Option<(String, String)> {
     }
 }
 
+/// True when the `aud` claim (string or array) contains the expected audience.
+fn audience_matches(claims: &Value, expected: &str) -> bool {
+    match claims.get("aud") {
+        Some(Value::String(value)) => value == expected,
+        Some(Value::Array(values)) => values.iter().any(|value| value.as_str() == Some(expected)),
+        _ => false,
+    }
+}
+
 pub fn verify_access_token(st: &AppState, token: &str) -> ApiResult<Value> {
     let jwks = st.keys.read().unwrap_or_else(|e| e.into_inner()).jwks();
     let (_header, claims) = jose::verify_with_jwks(&jwks, token, Some("at+jwt"))
@@ -39,6 +48,9 @@ pub fn verify_access_token(st: &AppState, token: &str) -> ApiResult<Value> {
 
     if claims.get("iss").and_then(Value::as_str) != Some(st.cfg.issuer.as_str()) {
         return Err(OauthError::unauthorized("access token issuer mismatch"));
+    }
+    if !audience_matches(&claims, &st.cfg.issuer) {
+        return Err(OauthError::unauthorized("access token audience mismatch"));
     }
     let exp = claims.get("exp").and_then(Value::as_i64).unwrap_or(0);
     if exp < now() {
@@ -1623,4 +1635,29 @@ pub async fn health(State(st): State<AppState>) -> Response {
     res.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::audience_matches;
+    use serde_json::json;
+
+    #[test]
+    fn audience_claim_is_checked() {
+        let issuer = "https://id.example.com";
+        assert!(audience_matches(
+            &json!({ "aud": "https://id.example.com" }),
+            issuer
+        ));
+        assert!(audience_matches(
+            &json!({ "aud": ["other", "https://id.example.com"] }),
+            issuer
+        ));
+        assert!(!audience_matches(
+            &json!({ "aud": "https://evil.example.com" }),
+            issuer
+        ));
+        assert!(!audience_matches(&json!({ "aud": [] }), issuer));
+        assert!(!audience_matches(&json!({}), issuer));
+    }
 }
