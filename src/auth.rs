@@ -325,11 +325,41 @@ pub fn safe_next(raw: &str) -> String {
         && !raw.starts_with("//")
         && !raw.contains('\\')
         && !raw.chars().any(char::is_control)
+        && !contains_encoded_separator(raw)
     {
         raw.to_string()
     } else {
         "/".to_string()
     }
+}
+
+/// Some proxies and frameworks percent-decode the path before routing, so
+/// `/%2f%2fevil.example` can collapse into a protocol-relative URL. Reject any
+/// percent-encoded byte that would reintroduce a separator or control
+/// character, rather than trusting the raw text.
+fn contains_encoded_separator(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                let decoded = ((hi << 4) | lo) as u8;
+                if decoded == b'/'
+                    || decoded == b'\\'
+                    || decoded < 0x20
+                    || decoded == 0x7f
+                {
+                    return true;
+                }
+                i += 3;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -1589,4 +1619,36 @@ fn delete_account_inner(
         res.headers_mut().append(header::SET_COOKIE, cookie);
     }
     Ok(res)
+}
+
+#[cfg(test)]
+mod safe_next_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_plain_same_origin_paths() {
+        assert_eq!(safe_next("/account"), "/account");
+        assert_eq!(safe_next("/account?x=1"), "/account?x=1");
+        assert_eq!(safe_next("/consent?rid=abc"), "/consent?rid=abc");
+    }
+
+    #[test]
+    fn rejects_protocol_relative_and_control_input() {
+        assert_eq!(safe_next("//evil.example"), "/");
+        assert_eq!(safe_next("/\\evil.example"), "/");
+        assert_eq!(safe_next("https://evil.example"), "/");
+        assert_eq!(safe_next("/a\nb"), "/");
+        assert_eq!(safe_next("/%00x"), "/");
+        assert_eq!(safe_next("/%0d%0aSet-Cookie:x"), "/");
+    }
+
+    #[test]
+    fn rejects_percent_encoded_separators() {
+        assert_eq!(safe_next("/%2f%2fevil.example"), "/");
+        assert_eq!(safe_next("/%2Fevil.example"), "/");
+        assert_eq!(safe_next("/%5cevil.example"), "/");
+        assert_eq!(safe_next("/%5Cevil.example"), "/");
+        // Percent sequences for ordinary characters are still allowed.
+        assert_eq!(safe_next("/%41"), "/%41");
+    }
 }
