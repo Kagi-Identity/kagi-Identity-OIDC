@@ -854,7 +854,10 @@ mod tests {
         // A realistic shallow nesting still parses.
         let shallow = vec![0x81, 0x81, 0x81, 0x00];
         let v = cbor::decode(&shallow).unwrap();
-        assert_eq!(v, Cbor::Array(vec![Cbor::Array(vec![Cbor::Array(vec![Cbor::Uint(0)])])]));
+        assert_eq!(
+            v,
+            Cbor::Array(vec![Cbor::Array(vec![Cbor::Array(vec![Cbor::Uint(0)])])])
+        );
     }
 
     #[test]
