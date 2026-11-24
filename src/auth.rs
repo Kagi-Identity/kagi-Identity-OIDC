@@ -1529,7 +1529,16 @@ fn recover_inner(
             st.db
                 .with(|c| db::consume_recovery_code(c, &user.id, &hash))?
         }
-        None => false,
+        None => {
+            // Do the same hash + UPDATE work against a non-existent user so a
+            // missing username is not measurably faster than a wrong code for
+            // an existing user.
+            let hash = crate::util::hash_recovery_code("kagi-recovery-dummy", &code);
+            let _ = st
+                .db
+                .with(|c| db::consume_recovery_code(c, "kagi-recovery-dummy", &hash))?;
+            false
+        }
     };
     let Some(user) = user.filter(|_| consumed) else {
         return Err(OauthError::invalid_request(
