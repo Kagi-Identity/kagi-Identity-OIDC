@@ -625,6 +625,11 @@ mod cbor {
     use super::Cbor;
     use anyhow::{anyhow, bail, Result};
 
+    /// Maximum nesting depth for arrays/maps/tags. WebAuthn structures are only
+    /// a handful of levels deep, so a tight bound rejects stack-exhaustion
+    /// inputs long before the recursive descent can run out of stack.
+    const MAX_DEPTH: usize = 16;
+
     pub fn decode(bytes: &[u8]) -> Result<Cbor> {
         let (value, used) = decode_one(bytes)?;
         if used != bytes.len() {
@@ -634,7 +639,11 @@ mod cbor {
     }
 
     pub fn decode_one(bytes: &[u8]) -> Result<(Cbor, usize)> {
-        let mut d = Decoder { b: bytes, pos: 0 };
+        let mut d = Decoder {
+            b: bytes,
+            pos: 0,
+            depth: 0,
+        };
         let v = d.value()?;
         Ok((v, d.pos))
     }
@@ -642,6 +651,7 @@ mod cbor {
     struct Decoder<'a> {
         b: &'a [u8],
         pos: usize,
+        depth: usize,
     }
 
     impl<'a> Decoder<'a> {
@@ -686,6 +696,16 @@ mod cbor {
         }
 
         fn value(&mut self) -> Result<Cbor> {
+            if self.depth >= MAX_DEPTH {
+                bail!("CBOR nesting is too deep");
+            }
+            self.depth += 1;
+            let out = self.value_inner();
+            self.depth -= 1;
+            out
+        }
+
+        fn value_inner(&mut self) -> Result<Cbor> {
             let initial = self.byte()?;
             let major = initial >> 5;
             let ai = initial & 0x1f;
@@ -777,5 +797,18 @@ mod tests {
         assert_eq!(v.map_int(3), Some(-7));
         assert_eq!(v.map_int(-1), Some(1));
         assert_eq!(v.map_bytes(-2).unwrap().len(), 32);
+    }
+
+    #[test]
+    fn cbor_rejects_deeply_nested_values() {
+        // 64 nested single-element arrays would otherwise recurse 64 levels.
+        let mut deep = vec![0x81u8; 64];
+        deep.push(0x00);
+        assert!(cbor::decode(&deep).is_err());
+
+        // A realistic shallow nesting still parses.
+        let shallow = vec![0x81, 0x81, 0x81, 0x00];
+        let v = cbor::decode(&shallow).unwrap();
+        assert_eq!(v, Cbor::Array(vec![Cbor::Array(vec![Cbor::Array(vec![Cbor::Uint(0)])])]));
     }
 }
