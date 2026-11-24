@@ -360,16 +360,51 @@ pub async fn end_session_post(
     end_session(&st, &headers, &form)
 }
 
+/// An `id_token_hint` binds to the current browser session when one exists:
+/// `sub` must match, and when the hint carries `sid` it must match the session
+/// id as well. With no active session there is nothing to bind to.
+fn hint_matches_session(claims: &Value, session_sub: Option<&str>, session_sid: Option<&str>) -> bool {
+    let Some(sub) = session_sub else {
+        return true;
+    };
+    if claims.get("sub").and_then(Value::as_str) != Some(sub) {
+        return false;
+    }
+    if let Some(sid) = claims.get("sid").and_then(Value::as_str) {
+        if Some(sid) != session_sid {
+            return false;
+        }
+    }
+    true
+}
+
 fn end_session(st: &AppState, headers: &HeaderMap, params: &HashMap<String, String>) -> Response {
+    let session = crate::auth::session_from_headers(st, headers);
     let mut client: Option<Client> = None;
 
-    if let Some(hint) = params.get("id_token_hint") {
+    if let Some(hint) = params.get("id_token_hint").filter(|hint| !hint.is_empty()) {
         let jwks = st.keys.read().unwrap_or_else(|e| e.into_inner()).jwks();
-        if let Ok((_h, claims)) = jose::verify_with_jwks(&jwks, hint, Some("JWT")) {
-            if let Some(aud) = claims.get("aud").and_then(Value::as_str) {
-                if let Ok(Some(c)) = st.db.with(|c| db::load_client(c, aud)) {
-                    client = Some(c);
-                }
+        let claims = match jose::verify_with_jwks(&jwks, hint, Some("JWT")) {
+            Ok((_h, claims)) => claims,
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "id_token_hint is invalid").into_response()
+            }
+        };
+        if claims.get("iss").and_then(Value::as_str) != Some(st.cfg.issuer.as_str()) {
+            return (StatusCode::BAD_REQUEST, "id_token_hint issuer mismatch").into_response();
+        }
+        // The hint must belong to the browser session that is being ended.
+        // Otherwise a token minted for another user or session could drive this
+        // logout and its registered post-logout redirect.
+        let session_sub = session.as_ref().map(|s| s.user_id.as_str());
+        let session_sid = session.as_ref().map(|s| s.id.as_str());
+        if !hint_matches_session(&claims, session_sub, session_sid) {
+            return (StatusCode::BAD_REQUEST, "id_token_hint does not match this session")
+                .into_response();
+        }
+        if let Some(aud) = claims.get("aud").and_then(Value::as_str) {
+            if let Ok(Some(c)) = st.db.with(|c| db::load_client(c, aud)) {
+                client = Some(c);
             }
         }
     }
@@ -1639,7 +1674,7 @@ pub async fn health(State(st): State<AppState>) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::audience_matches;
+    use super::{audience_matches, hint_matches_session};
     use serde_json::json;
 
     #[test]
@@ -1659,5 +1694,31 @@ mod tests {
         ));
         assert!(!audience_matches(&json!({ "aud": [] }), issuer));
         assert!(!audience_matches(&json!({}), issuer));
+    }
+
+    #[test]
+    fn id_token_hint_must_match_the_current_session() {
+        // No session: nothing to bind to.
+        assert!(hint_matches_session(&json!({"sub": "u1"}), None, None));
+        // Same user and session.
+        assert!(hint_matches_session(
+            &json!({"sub": "u1", "sid": "s1"}),
+            Some("u1"),
+            Some("s1")
+        ));
+        // Same user, hint without sid.
+        assert!(hint_matches_session(&json!({"sub": "u1"}), Some("u1"), Some("s1")));
+        // Different user.
+        assert!(!hint_matches_session(
+            &json!({"sub": "u2", "sid": "s1"}),
+            Some("u1"),
+            Some("s1")
+        ));
+        // Same user, different session.
+        assert!(!hint_matches_session(
+            &json!({"sub": "u1", "sid": "s2"}),
+            Some("u1"),
+            Some("s1")
+        ));
     }
 }
